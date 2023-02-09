@@ -369,3 +369,131 @@ fn diff_lineMode(
 
     return diffs;
 }
+
+//
+// Reorder and merge like edit sections.  Merge equalities.
+// Any edit section can move as long as it doesn't cross an equality.
+// @param diffs List of Diff objects.
+//
+fn diffCleanupMerge(diffs: std.ArrayListUnmanaged(Diff), allocator: mem.Allocator) !void {
+    // Add a dummy entry at the end.
+    try diffs.append(allocator, Diff{ .operation = .equal, .text = "" });
+    var pointer: usize = 0;
+    var count_delete: usize = 0;
+    var count_insert: usize = 0;
+    var text_delete = std.ArrayList(u8).init(allocator);
+    var text_insert = std.ArrayList(u8).init(allocator);
+    var commonlength: usize = undefined;
+    while (pointer < diffs.items.len) {
+        switch (diffs[pointer].operation) {
+            .insert => {
+                count_insert += 1;
+                text_insert += diffs[pointer].text;
+                pointer += 1;
+            },
+            .delete => {
+                count_delete += 1;
+                text_delete += diffs[pointer].text;
+                pointer += 1;
+            },
+            .equal => {
+                // Upon reaching an equality, check for prior redundancies.
+                if (count_delete + count_insert > 1) {
+                    if (count_delete != 0 and count_insert != 0) {
+                        // Factor out any common prefixies.
+                        commonlength = this.diffCommonPrefix(text_insert, text_delete);
+                        if (commonlength != 0) {
+                            if ((pointer - count_delete - count_insert) > 0 and
+                                diffs[pointer - count_delete - count_insert - 1].operation == .equal)
+                            {
+                                // diffs[pointer - count_delete - count_insert - 1].text
+                                //     += text_insert.Substring(0, commonlength);
+                                try diffs[pointer - count_delete - count_insert - 1].text.append(allocator, text_insert.items[0..commonlength]);
+                            } else {
+                                // diffs.Insert(0, new Diff(Operation.EQUAL,
+                                //    text_insert.Substring(0, commonlength)));
+                                const text = std.ArrayListUnmanaged(u8){ .items = try allocator.dupe(u8, text_insert.items[0..commonlength]) };
+                                diffs.insert(0, Diff{ .operation = .equal, .text = text });
+                                pointer += 1;
+                            }
+                            text_insert.len = commonlength;
+                            text_delete.len = commonlength;
+                        }
+                        // Factor out any common suffixies.
+                        // @ZigPort this seems very wrong
+                        commonlength = this.diffCommonSuffix(text_insert, text_delete);
+                        if (commonlength != 0) {
+                            diffs[pointer].text = try std.mem.concat(allocator, &.{ text_insert.items[
+                                text_insert.items.len - commonlength
+                            ], diffs[pointer].text });
+                            text_insert.items.len -= commonlength;
+                            text_delete.items.len -= commonlength;
+                        }
+                    }
+                    // Delete the offending records and add the merged ones.
+                    pointer -= count_delete + count_insert;
+                    Splice(diffs, pointer, count_delete + count_insert);
+                    // diffs.insertSlice(allocator, pointer, items: []const T)
+
+                    if (text_delete.items.len != 0) {
+                        Splice(diffs, pointer, 0, Diff{ .operation = .delete, .text = text_delete });
+                        pointer += 1;
+                    }
+                    if (text_insert.Length != 0) {
+                        diffs.Splice(pointer, 0, Diff{ .operation = .insert, .text = text_insert });
+                        pointer += 1;
+                    }
+                    pointer += 1;
+                } else if (pointer != 0 and diffs[pointer - 1].operation == .equal) {
+                    // Merge this equality with the previous one.
+                    try diffs[pointer - 1].text.append(allocator, diffs[pointer].text.items);
+                    diffs.orderedRemove(pointer);
+                } else {
+                    pointer += 1;
+                }
+                count_insert = 0;
+                count_delete = 0;
+                text_delete.items.len = 0;
+                text_insert.items.len = 0;
+            },
+        }
+    }
+    if (diffs[diffs.items.len - 1].text.items.len == 0) {
+        diffs.items.len -= 1;
+    }
+
+    // Second pass: look for single edits surrounded on both sides by
+    // equalities which can be shifted sideways to eliminate an equality.
+    // e.g: A<ins>BA</ins>C -> <ins>AB</ins>AC
+    var changes = false;
+    pointer = 1;
+    // Intentionally ignore the first and last element (don't need checking).
+    while (pointer < (diffs.items.len - 1)) {
+        if (diffs[pointer - 1].operation == .equal and
+            diffs[pointer + 1].operation == .equal)
+        {
+            // This is a single edit surrounded by equalities.
+            if (mem.endsWith(u8, diffs[pointer].text.items, diffs[pointer - 1].text.items)) {
+                // Shift the edit over the previous equality.
+                diffs[pointer].text = diffs[pointer - 1].text +
+                    diffs[pointer].text.Substring(0, diffs[pointer].text.Length -
+                    diffs[pointer - 1].text.Length);
+                diffs[pointer + 1].text = diffs[pointer - 1].text + diffs[pointer + 1].text;
+                diffs.Splice(pointer - 1, 1);
+                changes = true;
+            } else if (mem.startsWith(u8, diffs[pointer].text.items, diffs[pointer + 1].text.items)) {
+                // Shift the edit over the next equality.
+                diffs[pointer - 1].text += diffs[pointer + 1].text;
+                diffs[pointer].text =
+                    diffs[pointer].text.Substring(diffs[pointer + 1].text.Length) + diffs[pointer + 1].text;
+                diffs.Splice(pointer + 1, 1);
+                changes = true;
+            }
+        }
+        pointer += 1;
+    }
+    // If shifts were made, the diff needs reordering and another shift sweep.
+    if (changes) {
+        this.diff_cleanupMerge(diffs);
+    }
+}
