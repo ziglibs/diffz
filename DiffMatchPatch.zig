@@ -443,3 +443,86 @@ fn diffBisectSplit(
     try diffs.appendSlice(allocator, diffsb);
     return diffs;
 }
+
+//
+// Do a quick line-level diff on both strings, then rediff the parts for
+// greater accuracy.
+// This speedup can produce non-minimal diffs.
+// @param text1 Old string to be diffed.
+// @param text2 New string to be diffed.
+// @param deadline Time when the diff should be complete by.
+// @return List of Diff objects.
+//
+fn diff_lineMode(
+    text1: []const u8,
+    text2: []const u8,
+    deadline: u64,
+) DiffError!ArrayListUnmanaged(Diff) {
+    // Scan the text on a line-by-line basis first.
+    var a = diff_linesToChars(text1, text2);
+    text1 = a[0];
+    text2 = a[1];
+    var linearray = a[2];
+
+    var diffs: std.ArrayListUnmanaged(Diff) =
+        diff_main(text1, text2, false, deadline);
+
+    // Convert the diff back to original text.
+    diff_charsToLines(diffs, linearray);
+    // Eliminate freak matches (e.g. blank lines)
+    diff_cleanupSemantic(diffs);
+
+    // Rediff any replacement blocks, this time character-by-character.
+    // Add a dummy entry at the end.
+    try diffs.append(allocator, Diff(.equal, ""));
+    var pointer: usize = 0;
+    var count_delete: usize = 0;
+    var count_insert: usize = 0;
+    var text_delete: ArrayListUnmanaged(u8) = .{};
+    var text_insert: ArrayListUnmanaged(u8) = .{};
+    defer {
+        text_delete.deinit(allocator);
+        text_insert.deinit(allocator);
+    }
+    while (pointer < diffs.len) {
+        switch (diffs[pointer].operation) {
+            .insert => {
+                count_insert += 1;
+                // text_insert += diffs[pointer].text;
+                text_insert.append(allocator, diffs[pointer].text);
+            },
+            .delete => {
+                count_delete += 1;
+                // text_delete += diffs[pointer].text;
+                text_delete.append(allocator, diffs[pointer].text);
+            },
+            .equal => {
+                // Upon reaching an equality, check for prior redundancies.
+                if (count_delete >= 1 and count_insert >= 1) {
+                    // Delete the offending records and add the merged ones.
+                    // diffs.RemoveRange(pointer - count_delete - count_insert, count_delete + count_insert);
+                    diffs.replaceRange(
+                        allocator,
+                        pointer - count_delete - count_insert,
+                        count_delete + count_insert,
+                        &.{},
+                    );
+                    pointer = pointer - count_delete - count_insert;
+                    var subDiff = this.diff_main(text_delete, text_insert, false, deadline);
+                    // diffs.InsertRange(pointer, subDiff);
+                    try diffs.insertSlice(allocator, pointer, subDiff);
+                    pointer = pointer + subDiff.items.len;
+                }
+                count_insert = 0;
+                count_delete = 0;
+                text_delete.items.len = 0;
+                text_insert.items.len = 0;
+            },
+        }
+        pointer += 1;
+    }
+    // diffs.RemoveAt(diffs.Count - 1); // Remove the dummy entry at the end.
+    diffs.items.len -= 1;
+
+    return diffs;
+}
