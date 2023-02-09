@@ -471,7 +471,7 @@ fn diffLineMode(
     // Convert the diff back to original text.
     try diffCharsToLines(allocator, diffs.items, line_array.items);
     // Eliminate freak matches (e.g. blank lines)
-    try dmp.diffCleanupSemantic(allocator, diffs);
+    try diffCleanupSemantic(allocator, diffs);
 
     // Rediff any replacement blocks, this time character-by-character.
     // Add a dummy entry at the end.
@@ -488,16 +488,16 @@ fn diffLineMode(
     }
 
     while (pointer < diffs.len) {
-        switch (diffs[pointer].operation) {
+        switch (diffs.items[pointer].operation) {
             .insert => {
                 count_insert += 1;
-                // text_insert += diffs[pointer].text;
-                try text_insert.append(allocator, diffs[pointer].text);
+                // text_insert += diffs.items[pointer].text;
+                try text_insert.append(allocator, diffs.items[pointer].text);
             },
             .delete => {
                 count_delete += 1;
-                // text_delete += diffs[pointer].text;
-                try text_delete.append(allocator, diffs[pointer].text);
+                // text_delete += diffs.items[pointer].text;
+                try text_delete.append(allocator, diffs.items[pointer].text);
             },
             .equal => {
                 // Upon reaching an equality, check for prior redundancies.
@@ -809,5 +809,110 @@ fn diffCleanupMerge(diffs: std.ArrayListUnmanaged(Diff), allocator: mem.Allocato
     // If shifts were made, the diff needs reordering and another shift sweep.
     if (changes) {
         this.diff_cleanupMerge(diffs);
+    }
+}
+
+fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: ArrayListUnmanaged(Diff)) error{OutOfMemory}!void {
+    var changes = false;
+    // Stack of indices where equalities are found.
+    var equalities = ArrayListUnmanaged(isize){};
+    // Always equal to equalities[equalitiesLength-1][1]
+    var lastEquality: ?[]const u8 = null;
+    var pointer: isize = 0; // Index of current position.
+    // Number of characters that changed prior to the equality.
+    var length_insertions1: usize = 0;
+    var length_deletions1: usize = 0;
+    // Number of characters that changed after the equality.
+    var length_insertions2: usize = 0;
+    var length_deletions2: usize = 0;
+    while (pointer < diffs.items.len) {
+        if (diffs.items[pointer].operation == .equal) { // Equality found.
+            equalities.Push(pointer);
+            length_insertions1 = length_insertions2;
+            length_deletions1 = length_deletions2;
+            length_insertions2 = 0;
+            length_deletions2 = 0;
+            lastEquality = diffs.items[pointer].text;
+        } else { // an insertion or deletion
+            if (diffs.items[pointer].operation == .equal) {
+                length_insertions2 += diffs.items[pointer].text.Length;
+            } else {
+                length_deletions2 += diffs.items[pointer].text.Length;
+            }
+            // Eliminate an equality that is smaller or equal to the edits on both
+            // sides of it.
+            if (lastEquality != null and (lastEquality.Length <= std.math.max(length_insertions1, length_deletions1)) and (lastEquality.length <= std.math.max(length_insertions2, length_deletions2))) {
+                // Duplicate record.
+                diffs.Insert(equalities.Peek(), Diff{ .operation = .delete, .text = lastEquality });
+                // Change second copy to insert.
+                diffs.items[equalities.Peek() + 1].operation = .insert;
+                // Throw away the equality we just deleted.
+                equalities.Pop();
+                if (equalities.Count > 0) {
+                    equalities.Pop();
+                }
+                pointer = if (equalities.items.len > 0) equalities.Peek() else -1;
+                length_insertions1 = 0; // Reset the counters.
+                length_deletions1 = 0;
+                length_insertions2 = 0;
+                length_deletions2 = 0;
+                lastEquality = null;
+                changes = true;
+            }
+        }
+        pointer += 1;
+    }
+
+    // Normalize the diff.
+    if (changes) {
+        diffCleanupMerge(diffs);
+    }
+    diffCleanupSemanticLossless(diffs);
+
+    // Find any overlaps between deletions and insertions.
+    // e.g: <del>abcxxx</del><ins>xxxdef</ins>
+    //   -> <del>abc</del>xxx<ins>def</ins>
+    // e.g: <del>xxxabc</del><ins>defxxx</ins>
+    //   -> <ins>def</ins>xxx<del>abc</del>
+    // Only extract an overlap if it is as big as the edit ahead or behind it.
+    pointer = 1;
+    while (pointer < diffs.Count) {
+        if (diffs.items[pointer - 1].operation == Operation.DELETE and
+            diffs.items[pointer].operation == Operation.INSERT)
+        {
+            const deletion = diffs.items[pointer - 1].text.items;
+            const insertion = diffs.items[pointer].text.items;
+            var overlap_length1: isize = diff_commonOverlap(deletion, insertion);
+            var overlap_length2: isize = diff_commonOverlap(insertion, deletion);
+            if (overlap_length1 >= overlap_length2) {
+                if (overlap_length1 >= deletion.Length / 2.0 or
+                    overlap_length1 >= insertion.Length / 2.0)
+                {
+                    // Overlap found.
+                    // Insert an equality and trim the surrounding edits.
+                    diffs.Insert(pointer, Diff{ .operation = .equal, .text = insertion.Substring(0, overlap_length1) });
+                    diffs.items[pointer - 1].text =
+                        deletion.Substring(0, deletion.Length - overlap_length1);
+                    diffs.items[pointer + 1].text = insertion.Substring(overlap_length1);
+                    pointer += 1;
+                }
+            } else {
+                if (overlap_length2 >= deletion.Length / 2.0 or
+                    overlap_length2 >= insertion.Length / 2.0)
+                {
+                    // Reverse overlap found.
+                    // Insert an equality and swap and trim the surrounding edits.
+                    diffs.Insert(pointer, Diff{ .operation = .equal, .text = deletion.Substring(0, overlap_length2) });
+                    diffs.items[pointer - 1].operation = Operation.INSERT;
+                    diffs.items[pointer - 1].text =
+                        insertion.Substring(0, insertion.Length - overlap_length2);
+                    diffs.items[pointer + 1].operation = Operation.DELETE;
+                    diffs.items[pointer + 1].text = deletion.Substring(overlap_length2);
+                    pointer += 1;
+                }
+            }
+            pointer += 1;
+        }
+        pointer += 1;
     }
 }
