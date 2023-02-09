@@ -242,47 +242,60 @@ fn diffHalfMatch(
     if (before.len > after.len) {
         return half_match;
     } else {
+        const half_match_yes = half_match.?;
         return .{
-            .prefix_before = half_match[2],
-            .suffix_before = half_match[3],
-            .prefix_after = half_match[0],
-            .suffix_after = half_match[1],
-            .common_middle = half_match[4],
+            .prefix_before = half_match_yes.prefix_after,
+            .suffix_before = half_match_yes.suffix_after,
+            .prefix_after = half_match_yes.prefix_before,
+            .suffix_after = half_match_yes.suffix_before,
+            .common_middle = half_match_yes.common_middle,
         };
     }
 }
 
 fn diffHalfMatchInternal(
-    dmp: DiffMatchPatch,
+    _: DiffMatchPatch,
     allocator: std.mem.Allocator,
-    before: []const u8,
-    after: []const u8,
+    long_text: []const u8,
+    short_text: []const u8,
+    i: usize,
 ) DiffError!HalfMatchResult {
     // Start with a 1/4 length Substring at position i as a seed.
-    //   string seed = longtext.Substring(i, longtext.Length / 4);
-    //   int j = -1;
-    //   string best_common = string.Empty;
-    //   string best_long_text_a = string.Empty, best_long_text_b = string.Empty;
-    //   string best_short_text_a = string.Empty, best_short_text_b = string.Empty;
-    //   while (j < shorttext.Length && (j = shorttext.IndexOf(seed, j + 1,
-    //       StringComparison.Ordinal)) != -1) {
-    //     int prefixLength = diffCommonPrefix(longtext.Substring(i),
-    //                                          shorttext.Substring(j));
-    //     int suffixLength = diffCommonSuffix(longtext.Substring(0, i),
-    //                                          shorttext.Substring(0, j));
-    //     if (best_common.Length < suffixLength + prefixLength) {
-    //       best_common = shorttext.Substring(j - suffixLength, suffixLength)
-    //           + shorttext.Substring(j, prefixLength);
-    //       best_long_text_a = longtext.Substring(0, i - suffixLength);
-    //       best_long_text_b = longtext.Substring(i + prefixLength);
-    //       best_short_text_a = shorttext.Substring(0, j - suffixLength);
-    //       best_short_text_b = shorttext.Substring(j + prefixLength);
-    //     }
-    //   }
-    //   if (best_common.Length * 2 >= longtext.Length) {
-    //     return new string[]{best_long_text_a, best_long_text_b,
-    //         best_short_text_a, best_short_text_b, best_common};
-    //   } else {
-    //     return null;
-    //   }
+    const seed = long_text[i .. long_text.len / 4];
+    var j: isize = -1;
+
+    var best_common = std.ArrayListUnmanaged(u8){};
+    var best_long_text_a = "";
+    var best_long_text_b = "";
+    var best_short_text_a = "";
+    var best_short_text_b = "";
+
+    while (j < short_text.length and b: {
+        j = (std.mem.indexOf(u8, short_text[j + 1 ..], seed, j + 1) orelse break :b false) + j + 1;
+        break :b true;
+    }) {
+        var prefix_length = diffCommonPrefix(long_text[i..], short_text[j..]);
+        var suffix_length = diffCommonSuffix(long_text[0..i], short_text[0..j]);
+        if (best_common.items.len < suffix_length + prefix_length) {
+            best_common.items.len = 0;
+            try best_common.appendSlice(allocator, short_text[j - suffix_length .. suffix_length]);
+            try best_common.appendSlice(allocator, short_text[j..prefix_length]);
+
+            best_long_text_a = long_text[0 .. i - suffix_length];
+            best_long_text_b = long_text[i + prefix_length ..];
+            best_short_text_a = short_text[0 .. j - suffix_length];
+            best_short_text_b = short_text[j + prefix_length ..];
+        }
+    }
+    if (best_common.Length * 2 >= long_text.Length) {
+        return .{
+            .prefix_before = best_long_text_a,
+            .suffix_before = best_long_text_b,
+            .prefix_after = best_short_text_a,
+            .suffix_after = best_short_text_b,
+            .common_middle = best_common,
+        };
+    } else {
+        return null;
+    }
 }
