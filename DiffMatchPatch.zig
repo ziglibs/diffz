@@ -453,65 +453,68 @@ fn diffBisectSplit(
 // @param deadline Time when the diff should be complete by.
 // @return List of Diff objects.
 //
-fn diff_lineMode(
+fn diffLineMode(
+    dmp: DiffMatchPatch,
+    allocator: std.mem.Allocator,
     text1: []const u8,
     text2: []const u8,
     deadline: u64,
 ) DiffError!ArrayListUnmanaged(Diff) {
     // Scan the text on a line-by-line basis first.
-    var a = diff_linesToChars(text1, text2);
+    var a = dmp.diffLinesToChars(allocator, text1, text2);
     text1 = a[0];
     text2 = a[1];
     var linearray = a[2];
 
-    var diffs: std.ArrayListUnmanaged(Diff) =
-        diff_main(text1, text2, false, deadline);
+    var diffs: std.ArrayListUnmanaged(Diff) = try dmp.diffInternal(allocator, text1, text2, false, deadline);
 
     // Convert the diff back to original text.
-    diff_charsToLines(diffs, linearray);
+    try dmp.diffCharsToLines(allocator, diffs, linearray);
     // Eliminate freak matches (e.g. blank lines)
-    diff_cleanupSemantic(diffs);
+    try dmp.diffCleanupSemantic(allocator, diffs);
 
     // Rediff any replacement blocks, this time character-by-character.
     // Add a dummy entry at the end.
-    try diffs.append(allocator, Diff(.equal, ""));
+    try diffs.append(allocator, Diff{ .operation = .equal, .text = "" });
+
     var pointer: usize = 0;
     var count_delete: usize = 0;
     var count_insert: usize = 0;
-    var text_delete: ArrayListUnmanaged(u8) = .{};
-    var text_insert: ArrayListUnmanaged(u8) = .{};
+    var text_delete = ArrayListUnmanaged(u8){};
+    var text_insert = ArrayListUnmanaged(u8){};
     defer {
         text_delete.deinit(allocator);
         text_insert.deinit(allocator);
     }
+
     while (pointer < diffs.len) {
         switch (diffs[pointer].operation) {
             .insert => {
                 count_insert += 1;
                 // text_insert += diffs[pointer].text;
-                text_insert.append(allocator, diffs[pointer].text);
+                try text_insert.append(allocator, diffs[pointer].text);
             },
             .delete => {
                 count_delete += 1;
                 // text_delete += diffs[pointer].text;
-                text_delete.append(allocator, diffs[pointer].text);
+                try text_delete.append(allocator, diffs[pointer].text);
             },
             .equal => {
                 // Upon reaching an equality, check for prior redundancies.
                 if (count_delete >= 1 and count_insert >= 1) {
                     // Delete the offending records and add the merged ones.
                     // diffs.RemoveRange(pointer - count_delete - count_insert, count_delete + count_insert);
-                    diffs.replaceRange(
+                    try diffs.replaceRange(
                         allocator,
                         pointer - count_delete - count_insert,
                         count_delete + count_insert,
                         &.{},
                     );
                     pointer = pointer - count_delete - count_insert;
-                    var subDiff = this.diff_main(text_delete, text_insert, false, deadline);
-                    // diffs.InsertRange(pointer, subDiff);
-                    try diffs.insertSlice(allocator, pointer, subDiff);
-                    pointer = pointer + subDiff.items.len;
+                    var sub_diff = dmp.diffInternal(allocator, text_delete, text_insert, false, deadline);
+                    // diffs.InsertRange(pointer, sub_diff);
+                    try diffs.insertSlice(allocator, pointer, sub_diff);
+                    pointer = pointer + sub_diff.items.len;
                 }
                 count_insert = 0;
                 count_delete = 0;
