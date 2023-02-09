@@ -52,7 +52,7 @@ pub fn diff(
     /// a faster slightly less optimal diff.
     check_lines: bool,
 ) DiffError!ArrayListUnmanaged(Diff) {
-    const deadline = std.time.microTimestamp() + dmp.diff_timeout;
+    const deadline = @intCast(u64, std.time.microTimestamp()) + dmp.diff_timeout;
     return dmp.diffInternal(allocator, before, after, check_lines, deadline);
 }
 
@@ -86,7 +86,7 @@ fn diffInternal(
     trimmed_after = trimmed_after[0 .. after.len - common_length];
 
     // Compute the diff on the middle block.
-    diffs = try dmp.diffCompute(allocator, before, after, checklines, deadline);
+    diffs = try dmp.diffCompute(allocator, before, after, check_lines, deadline);
 
     // Restore the prefix and suffix.
     if (common_prefix.len != 0) {
@@ -96,7 +96,7 @@ fn diffInternal(
         try diffs.append(allocator, Diff{ .operation = .equal, .text = common_suffix });
     }
 
-    diffCleanupMerge(diffs);
+    dmp.diffCleanupMerge(allocator, diffs);
     return diffs;
 }
 
@@ -190,10 +190,10 @@ fn diffCompute(
     }
 
     if (check_lines and before.len > 100 and after.len > 100) {
-        return diffLineMode(text1, text2, deadline);
+        return dmp.diffLineMode(allocator, before, after, deadline);
     }
 
-    return diffBisect(text1, text2, deadline);
+    return dmp.diffBisect(allocator, before, after, deadline);
 }
 
 const HalfMatchResult = ?struct {
@@ -270,7 +270,7 @@ fn diffHalfMatchInternal(
     var best_short_text_a = "";
     var best_short_text_b = "";
 
-    while (j < short_text.length and b: {
+    while (j < short_text.len and b: {
         j = (std.mem.indexOf(u8, short_text[j + 1 ..], seed, j + 1) orelse break :b false) + j + 1;
         break :b true;
     }) {
@@ -287,7 +287,7 @@ fn diffHalfMatchInternal(
             best_short_text_b = short_text[j + prefix_length ..];
         }
     }
-    if (best_common.Length * 2 >= long_text.Length) {
+    if (best_common.len * 2 >= long_text.len) {
         return .{
             .prefix_before = best_long_text_a,
             .suffix_before = best_long_text_b,
@@ -298,4 +298,148 @@ fn diffHalfMatchInternal(
     } else {
         return null;
     }
+}
+
+fn diffBisect(
+    dmp: DiffMatchPatch,
+    allocator: std.mem.Allocator,
+    before: []const u8,
+    after: []const u8,
+    deadline: u64,
+) ArrayListUnmanaged(Diff) {
+    const max_d = (before.len + after.len + 1) / 2;
+    const v_offset = max_d;
+    const v_length = 2 * max_d;
+
+    var v1 = try ArrayListUnmanaged(isize).initCapacity(v_length);
+    v1.items.len = v_length;
+    var v2 = try ArrayListUnmanaged(isize).initCapacity(v_length);
+    v2.items.len = v_length;
+
+    var x: usize = 0;
+    while (x < v_length) : (x += 1) {
+        v1.items[x] = -1;
+        v2.items[x] = -1;
+    }
+    v1.items[v_offset + 1] = 0;
+    v2.items[v_offset + 1] = 0;
+    var delta = before.len - after.len;
+    // If the total number of characters is odd, then the front path will
+    // collide with the reverse path.
+    var front = (delta % 2 != 0);
+    // Offsets for start and end of k loop.
+    // Prevents mapping of space beyond the grid.
+    var k1start: usize = 0;
+    var k1end: usize = 0;
+    var k2start: usize = 0;
+    var k2end: usize = 0;
+
+    var d: usize = 0;
+    while (d < max_d) : (d += 1) {
+        // Bail out if deadline is reached.
+        if (@intCast(u64, std.time.microTimestamp()) > deadline) {
+            break;
+        }
+
+        // Walk the front path one step.
+        var k1: isize = -d + k1start;
+        while (k1 <= d - k1end) : (k1 += 2) {
+            var k1_offset: isize = v_offset + k1;
+            var x1: isize = 0;
+            if (k1 == -d or k1 != d and v1[k1_offset - 1] < v1[k1_offset + 1]) {
+                x1 = v1[k1_offset + 1];
+            } else {
+                x1 = v1[k1_offset - 1] + 1;
+            }
+            var y1: isize = x1 - k1;
+            while (x1 < before.len and y1 < after.len and before[x1] == after[y1]) {
+                x1 += 1;
+                y1 += 1;
+            }
+            v1[k1_offset] = x1;
+            if (x1 > before.len) {
+                // Ran off the right of the graph.
+                k1end += 2;
+            } else if (y1 > after.len) {
+                // Ran off the bottom of the graph.
+                k1start += 2;
+            } else if (front) {
+                var k2_offset: isize = v_offset + delta - k1;
+                if (k2_offset >= 0 and k2_offset < v_length and v2[k2_offset] != -1) {
+                    // Mirror x2 onto top-left coordinate system.
+                    var x2: isize = before.len - v2[k2_offset];
+                    if (x1 >= x2) {
+                        // Overlap detected.
+                        return dmp.diffBisectSplit(allocator, before, after, x1, y1, deadline);
+                    }
+                }
+            }
+        }
+
+        // Walk the reverse path one step.
+        var k2: isize = -d + k2start;
+        while (k2 <= d - k2end) : (k2 += 2) {
+            var k2_offset: isize = v_offset + k2;
+            var x2: isize = 0;
+            if (k2 == -d or k2 != d and v2[k2_offset - 1] < v2[k2_offset + 1]) {
+                x2 = v2[k2_offset + 1];
+            } else {
+                x2 = v2[k2_offset - 1] + 1;
+            }
+            var y2: isize = x2 - k2;
+            while (x2 < before.len and y2 < after.len and before[before.len - x2 - 1] == after[after.len - y2 - 1]) {
+                x2 += 1;
+                y2 += 1;
+            }
+            v2[k2_offset] = x2;
+            if (x2 > before.len) {
+                // Ran off the left of the graph.
+                k2end += 2;
+            } else if (y2 > after.len) {
+                // Ran off the top of the graph.
+                k2start += 2;
+            } else if (!front) {
+                var k1_offset: isize = v_offset + delta - k2;
+                if (k1_offset >= 0 and k1_offset < v_length and v1[k1_offset] != -1) {
+                    var x1: isize = v1[k1_offset];
+                    var y1: isize = v_offset + x1 - k1_offset;
+                    // Mirror x2 onto top-left coordinate system.
+                    x2 = before.len - v2[k2_offset];
+                    if (x1 >= x2) {
+                        // Overlap detected.
+                        return dmp.diffBisectSplit(allocator, before, after, x1, y1, deadline);
+                    }
+                }
+            }
+        }
+    }
+    // Diff took too long and hit the deadline or
+    // number of diffs equals number of characters, no commonality at all.
+    var diffs = ArrayListUnmanaged(Diff);
+    try diffs.append(allocator, Diff{ .operation = .delete, .text = before });
+    try diffs.append(allocator, Diff{ .operation = .insert, .text = after });
+    return diffs;
+}
+
+fn diffBisectSplit(
+    dmp: DiffMatchPatch,
+    allocator: std.mem.Allocator,
+    text1: []const u8,
+    text2: []const u8,
+    x: isize,
+    y: isize,
+    deadline: u64,
+) DiffError!ArrayListUnmanaged(Diff) {
+    const text1a = text1[0..x];
+    const text2a = text2[0..y];
+    const text1b = text1[x..];
+    const text2b = text2[y..];
+
+    // Compute both diffs serially.
+    var diffs = try dmp.diffInternal(allocator, text1a, text2a, false, deadline);
+    var diffsb = try dmp.diffInternal(allocator, text1b, text2b, false, deadline);
+    defer diffs.deinit(allocator);
+
+    try diffs.appendSlice(allocator, diffsb);
+    return diffs;
 }
