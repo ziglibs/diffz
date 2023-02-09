@@ -461,15 +461,15 @@ fn diffLineMode(
     deadline: u64,
 ) DiffError!ArrayListUnmanaged(Diff) {
     // Scan the text on a line-by-line basis first.
-    var a = dmp.diffLinesToChars(allocator, text1, text2);
-    text1 = a[0];
-    text2 = a[1];
-    var linearray = a[2];
+    var a = try diffLinesToChars(allocator, text1, text2);
+    text1 = a.chars_1;
+    text2 = a.chars_2;
+    var line_array = a.line_array;
 
-    var diffs: std.ArrayListUnmanaged(Diff) = try dmp.diffInternal(allocator, text1, text2, false, deadline);
+    var diffs: ArrayListUnmanaged(Diff) = try dmp.diffInternal(allocator, text1, text2, false, deadline);
 
     // Convert the diff back to original text.
-    try dmp.diffCharsToLines(allocator, diffs, linearray);
+    try diffCharsToLines(allocator, diffs.items, line_array.items);
     // Eliminate freak matches (e.g. blank lines)
     try dmp.diffCleanupSemantic(allocator, diffs);
 
@@ -528,4 +528,75 @@ fn diffLineMode(
     diffs.items.len -= 1;
 
     return diffs;
+}
+
+const LinesToCharsResult = struct {
+    chars_1: []const u8,
+    chars_2: []const u8,
+    line_array: ArrayListUnmanaged([]const u8),
+};
+
+fn diffLinesToChars(allocator: std.mem.Allocator, text1: []const u8, text2: []const u8) error{OutOfMemory}!LinesToCharsResult {
+    var line_array = ArrayListUnmanaged([]const u8){};
+    var line_hash = std.StringHashMapUnmanaged(usize){};
+    // e.g. line_array[4] == "Hello\n"
+    // e.g. line_hash.get("Hello\n") == 4
+
+    // "\x00" is a valid character, but various debuggers don't like it.
+    // So we'll insert a junk entry to avoid generating a null character.
+    try line_array.append(allocator, "");
+
+    // Allocate 2/3rds of the space for text1, the rest for text2.
+    var chars1 = diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, 40000);
+    var chars2 = diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, 65535);
+    return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
+}
+
+fn diffLinesToCharsMunge(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    line_array: *ArrayListUnmanaged([]const u8),
+    line_hash: *std.StringHashMapUnmanaged(usize),
+    max_lines: usize,
+) error{OutOfMemory}![]const u8 {
+    var line_start: isize = 0;
+    var line_end: isize = -1;
+    var line = "";
+    var chars = ArrayListUnmanaged(u8){};
+    // Walk the text, pulling out a Substring for each line.
+    // text.split('\n') would would temporarily double our memory footprint.
+    // Modifying text would create many large strings to garbage collect.
+    while (line_end < text.len - 1) {
+        line_end = b: {
+            break :b (std.mem.indexOf(u8, text[line_start..], "\n") orelse break :b text.len - 1) + line_start;
+        };
+        line = text[line_start .. line_end + 1 - line_start];
+
+        if (line_hash.get(line)) |value| {
+            try chars.append(allocator, value);
+        } else {
+            if (line_array.items.len == max_lines) {
+                // Bail out at 65535 because char 65536 == char 0.
+                line = text[line_start..];
+                line_end = text.len;
+            }
+            try line_array.append(allocator, line);
+            try line_hash.put(allocator, line, line_array.items.len - 1);
+            try chars.append(allocator, line_array.items.len - 1);
+        }
+        line_start = line_end + 1;
+    }
+    return try chars.items.toOwnedSlice(allocator);
+}
+
+fn diffCharsToLines(allocator: std.mem.Allocator, diffs: []Diff, line_array: []const []const u8) void {
+    var text = ArrayListUnmanaged(u8){};
+    for (diffs) |d| {
+        text.items.len = 0;
+        var j: usize = 0;
+        while (j < diff.text.Length) : (j += 1) {
+            try text.append(allocator, line_array[d.text[j]]);
+        }
+        d.text = text;
+    }
 }
