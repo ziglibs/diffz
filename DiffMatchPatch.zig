@@ -1,6 +1,7 @@
 const DiffMatchPatch = @This();
 
 const std = @import("std");
+const testing = std.testing;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
 /// DMP with default configuration options
@@ -29,6 +30,9 @@ pub const Diff = struct {
 
     pub fn init(operation: Operation, text: []const u8) Diff {
         return .{ .operation = operation, .text = text };
+    }
+    pub fn eql(a: Diff, b: Diff) bool {
+        return a.operation == b.operation and std.mem.eql(u8, a.text, b.text);
     }
 };
 
@@ -581,11 +585,11 @@ fn diffLinesToCharsMunge(
     // Walk the text, pulling out a Substring for each line.
     // text.split('\n') would would temporarily double our memory footprint.
     // Modifying text would create many large strings to garbage collect.
-    while (line_end < text.len - 1) {
+    while (line_end < @intCast(isize, text.len) - 1) {
         line_end = b: {
             break :b @intCast(isize, std.mem.indexOf(u8, text[@intCast(usize, line_start)..], "\n") orelse break :b @intCast(isize, text.len - 1)) + line_start;
         };
-        line = text[@intCast(usize, line_start)..@intCast(usize, line_end + 1 - line_start)];
+        line = text[@intCast(usize, line_start) .. @intCast(usize, line_start) + @intCast(usize, line_end + 1 - line_start)];
 
         if (line_hash.get(line)) |value| {
             try chars.append(allocator, @intCast(u8, value));
@@ -1203,7 +1207,7 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
 // }
 
 // test {
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     var arena = std.heap.ArenaAllocator.init(testing.allocator);
 //     defer arena.deinit();
 
 //     var bruh = try default.diff(arena.allocator(), "Hello World.", "Goodbye World.", true);
@@ -1223,42 +1227,42 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
 
 test diffCommonPrefix {
     // Detect any common suffix.
-    try std.testing.expectEqual(@as(usize, 0), diffCommonPrefix("abc", "xyz")); // Null case
-    try std.testing.expectEqual(@as(usize, 4), diffCommonPrefix("1234abcdef", "1234xyz")); // Non-null case
-    try std.testing.expectEqual(@as(usize, 4), diffCommonPrefix("1234", "1234xyz")); // Whole case
+    try testing.expectEqual(@as(usize, 0), diffCommonPrefix("abc", "xyz")); // Null case
+    try testing.expectEqual(@as(usize, 4), diffCommonPrefix("1234abcdef", "1234xyz")); // Non-null case
+    try testing.expectEqual(@as(usize, 4), diffCommonPrefix("1234", "1234xyz")); // Whole case
 }
 
 test diffCommonSuffix {
     // Detect any common suffix.
-    try std.testing.expectEqual(@as(usize, 0), diffCommonSuffix("abc", "xyz")); // Null case
-    try std.testing.expectEqual(@as(usize, 4), diffCommonSuffix("abcdef1234", "xyz1234")); // Non-null case
-    try std.testing.expectEqual(@as(usize, 4), diffCommonSuffix("1234", "xyz1234")); // Whole case
+    try testing.expectEqual(@as(usize, 0), diffCommonSuffix("abc", "xyz")); // Null case
+    try testing.expectEqual(@as(usize, 4), diffCommonSuffix("abcdef1234", "xyz1234")); // Non-null case
+    try testing.expectEqual(@as(usize, 4), diffCommonSuffix("1234", "xyz1234")); // Whole case
 }
 
 test diffCommonOverlap {
     // Detect any suffix/prefix overlap.
-    try std.testing.expectEqual(@as(usize, 0), diffCommonOverlap("", "abcd")); // Null case
-    try std.testing.expectEqual(@as(usize, 3), diffCommonOverlap("abc", "abcd")); // Whole case
-    try std.testing.expectEqual(@as(usize, 0), diffCommonOverlap("123456", "abcd")); // No overlap
-    try std.testing.expectEqual(@as(usize, 3), diffCommonOverlap("123456xxx", "xxxabcd")); // Overlap
+    try testing.expectEqual(@as(usize, 0), diffCommonOverlap("", "abcd")); // Null case
+    try testing.expectEqual(@as(usize, 3), diffCommonOverlap("abc", "abcd")); // Whole case
+    try testing.expectEqual(@as(usize, 0), diffCommonOverlap("123456", "abcd")); // No overlap
+    try testing.expectEqual(@as(usize, 3), diffCommonOverlap("123456xxx", "xxxabcd")); // Overlap
 
     // Some overly clever languages (C#) may treat ligatures as equal to their
     // component letters.  E.g. U+FB01 == 'fi'
-    try std.testing.expectEqual(@as(usize, 0), diffCommonOverlap("fi", "\u{fb01}")); // Unicode
+    try testing.expectEqual(@as(usize, 0), diffCommonOverlap("fi", "\u{fb01}")); // Unicode
 }
 
 test diffHalfMatch {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
     var one_timeout = DiffMatchPatch{};
     one_timeout.diff_timeout = 1;
 
-    try std.testing.expectEqual(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "1234567890", "abcdef")); // No match #1
-    try std.testing.expectEqual(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "12345", "23")); // No match #2
+    try testing.expectEqual(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "1234567890", "abcdef")); // No match #1
+    try testing.expectEqual(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "12345", "23")); // No match #2
 
     // Single matches
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "12",
         .suffix_before = "90",
         .prefix_after = "a",
@@ -1266,7 +1270,7 @@ test diffHalfMatch {
         .common_middle = "345678",
     }), try one_timeout.diffHalfMatch(arena.allocator(), "1234567890", "a345678z")); // Single Match #1
 
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "a",
         .suffix_before = "z",
         .prefix_after = "12",
@@ -1274,7 +1278,7 @@ test diffHalfMatch {
         .common_middle = "345678",
     }), try one_timeout.diffHalfMatch(arena.allocator(), "a345678z", "1234567890")); // Single Match #2
 
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "abc",
         .suffix_before = "z",
         .prefix_after = "1234",
@@ -1282,7 +1286,7 @@ test diffHalfMatch {
         .common_middle = "56789",
     }), try one_timeout.diffHalfMatch(arena.allocator(), "abc56789z", "1234567890")); // Single Match #3
 
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "a",
         .suffix_before = "xyz",
         .prefix_after = "1",
@@ -1291,7 +1295,7 @@ test diffHalfMatch {
     }), try one_timeout.diffHalfMatch(arena.allocator(), "a23456xyz", "1234567890")); // Single Match #4
 
     // Multiple matches
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "12123",
         .suffix_before = "123121",
         .prefix_after = "a",
@@ -1299,7 +1303,7 @@ test diffHalfMatch {
         .common_middle = "1234123451234",
     }), try one_timeout.diffHalfMatch(arena.allocator(), "121231234123451234123121", "a1234123451234z")); // Multiple Matches #1
 
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "",
         .suffix_before = "-=-=-=-=-=",
         .prefix_after = "x",
@@ -1307,7 +1311,7 @@ test diffHalfMatch {
         .common_middle = "x-=-=-=-=-=-=-=",
     }), try one_timeout.diffHalfMatch(arena.allocator(), "x-=-=-=-=-=-=-=-=-=-=-=-=", "xx-=-=-=-=-=-=-=")); // Multiple Matches #2
 
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "-=-=-=-=-=",
         .suffix_before = "",
         .prefix_after = "",
@@ -1317,7 +1321,7 @@ test diffHalfMatch {
 
     // Other cases
     // Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
         .prefix_before = "qHillo",
         .suffix_before = "w",
         .prefix_after = "x",
@@ -1326,7 +1330,98 @@ test diffHalfMatch {
     }), try one_timeout.diffHalfMatch(arena.allocator(), "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
 
     one_timeout.diff_timeout = 0;
-    try std.testing.expectEqualDeep(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
+    try testing.expectEqualDeep(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
+}
+
+test diffLinesToChars {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Convert lines down to characters.
+    var tmp_array_list = std.ArrayList([]const u8).init(arena.allocator());
+    try tmp_array_list.append("");
+    try tmp_array_list.append("alpha\n");
+    try tmp_array_list.append("beta\n");
+
+    var result = try diffLinesToChars(arena.allocator(), "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
+    try testing.expectEqualStrings("\u{0001}\u{0002}\u{0001}", result.chars_1); // Shared lines #1
+    try testing.expectEqualStrings("\u{0002}\u{0001}\u{0002}", result.chars_2); // Shared lines #2
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
+
+    tmp_array_list.items.len = 0;
+    try tmp_array_list.append("");
+    try tmp_array_list.append("alpha\r\n");
+    try tmp_array_list.append("beta\r\n");
+    try tmp_array_list.append("\r\n");
+
+    result = try diffLinesToChars(arena.allocator(), "", "alpha\r\nbeta\r\n\r\n\r\n");
+    try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
+    try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
+
+    tmp_array_list.items.len = 0;
+    try tmp_array_list.append("");
+    try tmp_array_list.append("a");
+    try tmp_array_list.append("b");
+
+    result = try diffLinesToChars(arena.allocator(), "a", "b");
+    try testing.expectEqualStrings("\u{0001}", result.chars_1); // No linebreaks #1.
+    try testing.expectEqualStrings("\u{0002}", result.chars_2); // No linebreaks #2.
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
+
+    // TODO: More than 256 to reveal any 8-bit limitations but this requires
+    // some unicode logic that I don't want to deal with
+
+    // TODO: Fix this
+
+    // const n: u8 = 255;
+    // tmp_array_list.items.len = 0;
+
+    // var line_list = std.ArrayList(u8).init(arena.allocator());
+    // var char_list = std.ArrayList(u8).init(arena.allocator());
+
+    // var i: u8 = 0;
+    // while (i < n) : (i += 1) {
+    //     try tmp_array_list.append(&.{ i, '\n' });
+    //     try line_list.appendSlice(&.{ i, '\n' });
+    //     try char_list.append(i);
+    // }
+    // try testing.expectEqual(@as(usize, n), tmp_array_list.items.len); // Test initialization fail #1
+    // try testing.expectEqual(@as(usize, n), char_list.items.len); // Test initialization fail #2
+    // try tmp_array_list.insert(0, "");
+    // result = try diffLinesToChars(arena.allocator(), line_list.items, "");
+    // try testing.expectEqualStrings(char_list.items, result.chars_1);
+    // try testing.expectEqualStrings("", result.chars_2);
+    // try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items);
+}
+
+test diffCharsToLines {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expect((Diff{ .operation = .equal, .text = "a" }).eql(Diff{ .operation = .equal, .text = "a" }));
+    try std.testing.expect(!(Diff{ .operation = .insert, .text = "a" }).eql(Diff{ .operation = .equal, .text = "a" }));
+    try std.testing.expect(!(Diff{ .operation = .equal, .text = "a" }).eql(Diff{ .operation = .equal, .text = "b" }));
+    try std.testing.expect(!(Diff{ .operation = .equal, .text = "a" }).eql(Diff{ .operation = .delete, .text = "b" }));
+
+    // Convert chars up to lines.
+    var diffs = std.ArrayList(Diff).init(arena.allocator());
+    try diffs.appendSlice(&.{
+        Diff{ .operation = .equal, .text = try arena.allocator().dupe(u8, "\u{0001}\u{0002}\u{0001}") },
+        Diff{ .operation = .insert, .text = try arena.allocator().dupe(u8, "\u{0002}\u{0001}\u{0002}") },
+    });
+    var tmp_vector = std.ArrayList([]const u8).init(arena.allocator());
+    try tmp_vector.append("");
+    try tmp_vector.append("alpha\n");
+    try tmp_vector.append("beta\n");
+    try diffCharsToLines(arena.allocator(), diffs.items, tmp_vector.items);
+
+    try std.testing.expectEqualDeep([_]Diff{
+        Diff{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
+        Diff{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
+    }, diffs.items[0..2].*);
+
+    // TODO: Implement exhaustive tests
 }
 
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: std.ArrayListUnmanaged(Diff)) ![2][]const u8 {
