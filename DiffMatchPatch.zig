@@ -61,6 +61,14 @@ patch_margin: u16 = 4,
 pub const DiffError = error{OutOfMemory};
 
 /// It is recommended that you use an Arena for this operation.
+///
+/// Find the differences between two texts.
+/// @param before Old string to be diffed.
+/// @param after New string to be diffed.
+/// @param checklines Speedup flag.  If false, then don't run a
+///     line-level diff first to identify the changed areas.
+///     If true, then run a faster slightly less optimal diff.
+/// @return List of Diff objects.
 pub fn diff(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -145,6 +153,15 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
     return n;
 }
 
+/// Find the differences between two texts.  Assumes that the texts do not
+/// have any common prefix or suffix.
+/// @param before Old string to be diffed.
+/// @param after New string to be diffed.
+/// @param checklines Speedup flag.  If false, then don't run a
+///     line-level diff first to identify the changed areas.
+///     If true, then run a faster slightly less optimal diff.
+/// @param deadline Time when the diff should be complete by.
+/// @return List of Diff objects.
 fn diffCompute(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -223,6 +240,14 @@ const HalfMatchResult = struct {
     common_middle: []const u8,
 };
 
+/// Do the two texts share a Substring which is at least half the length of
+/// the longer text?
+/// This speedup can produce non-minimal diffs.
+/// @param before First string.
+/// @param after Second string.
+/// @return Five element String array, containing the prefix of text1, the
+///     suffix of text1, the prefix of text2, the suffix of text2 and the
+///     common middle.  Or null if there was no match.
 fn diffHalfMatch(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -272,6 +297,14 @@ fn diffHalfMatch(
     }
 }
 
+/// Does a Substring of shorttext exist within longtext such that the
+/// Substring is at least half the length of longtext?
+/// @param longtext Longer string.
+/// @param shorttext Shorter string.
+/// @param i Start index of quarter length Substring within longtext.
+/// @return Five element string array, containing the prefix of longtext, the
+///     suffix of longtext, the prefix of shorttext, the suffix of shorttext
+///     and the common middle.  Or null if there was no match.
 fn diffHalfMatchInternal(
     _: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -319,6 +352,13 @@ fn diffHalfMatchInternal(
     }
 }
 
+/// Find the 'middle snake' of a diff, split the problem in two
+/// and return the recursively constructed diff.
+/// See Myers 1986 paper: An O(ND) Difference Algorithm and Its Variations.
+/// @param before Old string to be diffed.
+/// @param after New string to be diffed.
+/// @param deadline Time at which to bail if not yet complete.
+/// @return List of Diff objects.
 fn diffBisect(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -442,6 +482,14 @@ fn diffBisect(
     return diffs;
 }
 
+/// Given the location of the 'middle snake', split the diff in two parts
+/// and recurse.
+/// @param text1 Old string to be diffed.
+/// @param text2 New string to be diffed.
+/// @param x Index of split point in text1.
+/// @param y Index of split point in text2.
+/// @param deadline Time at which to bail if not yet complete.
+/// @return LinkedList of Diff objects.
 fn diffBisectSplit(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -465,15 +513,13 @@ fn diffBisectSplit(
     return diffs;
 }
 
-//
-// Do a quick line-level diff on both strings, then rediff the parts for
-// greater accuracy.
-// This speedup can produce non-minimal diffs.
-// @param text1 Old string to be diffed.
-// @param text2 New string to be diffed.
-// @param deadline Time when the diff should be complete by.
-// @return List of Diff objects.
-//
+/// Do a quick line-level diff on both strings, then rediff the parts for
+/// greater accuracy.
+/// This speedup can produce non-minimal diffs.
+/// @param text1 Old string to be diffed.
+/// @param text2 New string to be diffed.
+/// @param deadline Time when the diff should be complete by.
+/// @return List of Diff objects.
 fn diffLineMode(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -557,7 +603,18 @@ const LinesToCharsResult = struct {
     line_array: ArrayListUnmanaged([]const u8),
 };
 
-fn diffLinesToChars(allocator: std.mem.Allocator, text1: []const u8, text2: []const u8) error{OutOfMemory}!LinesToCharsResult {
+/// Split two texts into a list of strings.  Reduce the texts to a string of
+/// hashes where each Unicode character represents one line.
+/// @param text1 First string.
+/// @param text2 Second string.
+/// @return Three element Object array, containing the encoded text1, the
+///     encoded text2 and the List of unique strings.  The zeroth element
+///     of the List of unique strings is intentionally blank.
+fn diffLinesToChars(
+    allocator: std.mem.Allocator,
+    text1: []const u8,
+    text2: []const u8,
+) error{OutOfMemory}!LinesToCharsResult {
     var line_array = ArrayListUnmanaged([]const u8){};
     var line_hash = std.StringHashMapUnmanaged(usize){};
     // e.g. line_array[4] == "Hello\n"
@@ -573,6 +630,13 @@ fn diffLinesToChars(allocator: std.mem.Allocator, text1: []const u8, text2: []co
     return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
 
+/// Split a text into a list of strings.  Reduce the texts to a string of
+/// hashes where each Unicode character represents one line.
+/// @param text String to encode.
+/// @param lineArray List of unique strings.
+/// @param lineHash Map of strings to indices.
+/// @param maxLines Maximum length of lineArray.
+/// @return Encoded string.
 fn diffLinesToCharsMunge(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -610,6 +674,10 @@ fn diffLinesToCharsMunge(
     return try chars.toOwnedSlice(allocator);
 }
 
+/// Rehydrate the text in a diff from a string of line hashes to real lines
+/// of text.
+/// @param diffs List of Diff objects.
+/// @param lineArray List of unique strings.
 fn diffCharsToLines(allocator: std.mem.Allocator, diffs: []Diff, line_array: []const []const u8) error{OutOfMemory}!void {
     var text = ArrayListUnmanaged(u8){};
     defer text.deinit(allocator);
@@ -624,11 +692,9 @@ fn diffCharsToLines(allocator: std.mem.Allocator, diffs: []Diff, line_array: []c
     }
 }
 
-//
-// Reorder and merge like edit sections.  Merge equalities.
-// Any edit section can move as long as it doesn't cross an equality.
-// @param diffs List of Diff objects.
-//
+/// Reorder and merge like edit sections.  Merge equalities.
+/// Any edit section can move as long as it doesn't cross an equality.
+/// @param diffs List of Diff objects.
 fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged(Diff)) error{OutOfMemory}!void {
     // Add a dummy entry at the end.
     try diffs.append(allocator, Diff{ .operation = .equal, .text = "" });
@@ -802,6 +868,9 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged
     }
 }
 
+/// Reduce the number of edits by eliminating semantically trivial
+/// equalities.
+/// @param diffs List of Diff objects.
 fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *ArrayListUnmanaged(Diff)) error{OutOfMemory}!void {
     var changes = false;
     // Stack of indices where equalities are found.
@@ -1015,14 +1084,12 @@ pub fn diffCleanupSemanticLossless(
     }
 }
 
-//
-// Given two strings, compute a score representing whether the internal
-// boundary falls on logical boundaries.
-// Scores range from 6 (best) to 0 (worst).
-// @param one First string.
-// @param two Second string.
-// @return The score.
-//
+/// Given two strings, compute a score representing whether the internal
+/// boundary falls on logical boundaries.
+/// Scores range from 6 (best) to 0 (worst).
+/// @param one First string.
+/// @param two Second string.
+/// @return The score.
 fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     if (one.len == 0 or two.len == 0) {
         // Edges are the best.
@@ -1162,13 +1229,11 @@ pub fn diffCleanupEfficiency(
     }
 }
 
-//
-// Determine if the suffix of one string is the prefix of another.
-// @param text1 First string.
-// @param text2 Second string.
-// @return The number of characters common to the end of the first
-//     string and the start of the second string.
-//
+/// Determine if the suffix of one string is the prefix of another.
+/// @param text1 First string.
+/// @param text2 Second string.
+/// @return The number of characters common to the end of the first
+///     string and the start of the second string.
 fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     var text1 = text1_in;
     var text2 = text2_in;
