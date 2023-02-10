@@ -15,6 +15,17 @@ pub const Diff = struct {
 
     operation: Operation,
     text: []const u8,
+
+    pub fn format(value: Diff, _: anytype, _: anytype, writer: anytype) !void {
+        try writer.print("({s}, \"{s}\")", .{
+            switch (value.operation) {
+                .equal => "",
+                .insert => "+",
+                .delete => "-",
+            },
+            value.text,
+        });
+    }
 };
 
 /// Number of microseconds to map a diff before giving up (0 for infinity).
@@ -82,8 +93,8 @@ fn diffInternal(
     // Trim off common suffix (speedup).
     common_length = diffCommonSuffix(before, after);
     var common_suffix = before[before.len - common_length ..];
-    trimmed_before = trimmed_before[0 .. before.len - common_length];
-    trimmed_after = trimmed_after[0 .. after.len - common_length];
+    trimmed_before = trimmed_before[0 .. trimmed_before.len - common_length];
+    trimmed_after = trimmed_after[0 .. trimmed_after.len - common_length];
 
     // Compute the diff on the middle block.
     diffs = try dmp.diffCompute(allocator, before, after, check_lines, deadline);
@@ -261,7 +272,7 @@ fn diffHalfMatchInternal(
     i: usize,
 ) DiffError!HalfMatchResult {
     // Start with a 1/4 length Substring at position i as a seed.
-    const seed = long_text[i .. long_text.len / 4];
+    const seed = long_text[i .. i + long_text.len / 4];
     var j: isize = -1;
 
     var best_common = std.ArrayListUnmanaged(u8){};
@@ -278,8 +289,8 @@ fn diffHalfMatchInternal(
         var suffix_length = diffCommonSuffix(long_text[0..i], short_text[0..@intCast(usize, j)]);
         if (best_common.items.len < suffix_length + prefix_length) {
             best_common.items.len = 0;
-            try best_common.appendSlice(allocator, short_text[@intCast(usize, j - @intCast(isize, suffix_length))..suffix_length]);
-            try best_common.appendSlice(allocator, short_text[@intCast(usize, j)..prefix_length]);
+            try best_common.appendSlice(allocator, short_text[@intCast(usize, j - @intCast(isize, suffix_length)) .. @intCast(usize, j - @intCast(isize, suffix_length)) + suffix_length]);
+            try best_common.appendSlice(allocator, short_text[@intCast(usize, j) .. @intCast(usize, j) + prefix_length]);
 
             best_long_text_a = long_text[0 .. i - suffix_length];
             best_long_text_b = long_text[i + prefix_length ..];
@@ -323,10 +334,10 @@ fn diffBisect(
     }
     v1.items[v_offset + 1] = 0;
     v2.items[v_offset + 1] = 0;
-    var delta = before.len - after.len;
+    var delta = @intCast(isize, before.len) - @intCast(isize, after.len);
     // If the total number of characters is odd, then the front path will
     // collide with the reverse path.
-    var front = (delta % 2 != 0);
+    var front = (@mod(delta, 2) != 0);
     // Offsets for start and end of k loop.
     // Prevents mapping of space beyond the grid.
     var k1start: usize = 0;
@@ -364,7 +375,7 @@ fn diffBisect(
                 // Ran off the bottom of the graph.
                 k1start += 2;
             } else if (front) {
-                var k2_offset: isize = @intCast(isize, v_offset + delta) - k1;
+                var k2_offset: isize = @intCast(isize, v_offset) + delta - k1;
                 if (k2_offset >= 0 and k2_offset < v_length and v2.items[@intCast(usize, k2_offset)] != -1) {
                     // Mirror x2 onto top-left coordinate system.
                     var x2: isize = @intCast(isize, before.len) - v2.items[@intCast(usize, k2_offset)];
@@ -399,7 +410,7 @@ fn diffBisect(
                 // Ran off the top of the graph.
                 k2start += 2;
             } else if (!front) {
-                var k1_offset: isize = @intCast(isize, v_offset + delta) - k2;
+                var k1_offset: isize = @intCast(isize, v_offset) + delta - k2;
                 if (k1_offset >= 0 and k1_offset < v_length and v1.items[@intCast(usize, k1_offset)] != -1) {
                     var x1: isize = v1.items[@intCast(usize, k1_offset)];
                     var y1: isize = @intCast(isize, v_offset) + x1 - k1_offset;
@@ -438,7 +449,7 @@ fn diffBisectSplit(
     // Compute both diffs serially.
     var diffs = try dmp.diffInternal(allocator, text1a, text2a, false, deadline);
     var diffsb = try dmp.diffInternal(allocator, text1b, text2b, false, deadline);
-    defer diffs.deinit(allocator);
+    defer diffsb.deinit(allocator);
 
     try diffs.appendSlice(allocator, diffsb.items);
     return diffs;
@@ -654,8 +665,8 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged
                                 std.mem.copy(u8, nt, diffs.items[ii].text);
                                 std.mem.copy(u8, nt[diffs.items[ii].text.len..], text_insert.items[0..common_length]);
 
-                                diffs.items[ii].text = nt;
                                 allocator.free(diffs.items[ii].text);
+                                diffs.items[ii].text = nt;
                             } else {
                                 // diffs.Insert(0, new Diff(Operation.EQUAL,
                                 //    text_insert.Substring(0, common_length)));
@@ -698,9 +709,9 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged
                     std.mem.copy(u8, nt, diffs.items[pointer - 1].text);
                     std.mem.copy(u8, nt[diffs.items[pointer - 1].text.len..], diffs.items[pointer].text);
 
+                    // allocator.free(diffs.items[pointer - 1].text);
                     diffs.items[pointer - 1].text = nt;
-                    allocator.free(diffs.items[pointer - 1].text);
-                    allocator.free(diffs.items[pointer].text);
+                    // allocator.free(diffs.items[pointer].text);
 
                     // try diffs.items[pointer - 1].text.append(allocator, diffs.items[pointer].text.items);
                     _ = diffs.orderedRemove(pointer);
@@ -743,8 +754,8 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged
                 });
                 const p1t = try std.mem.concat(allocator, u8, &.{ diffs.items[pointer - 1].text, diffs.items[pointer + 1].text });
 
-                allocator.free(diffs.items[pointer].text);
-                allocator.free(diffs.items[pointer + 1].text);
+                // allocator.free(diffs.items[pointer].text);
+                // allocator.free(diffs.items[pointer + 1].text);
 
                 diffs.items[pointer].text = pt;
                 diffs.items[pointer + 1].text = p1t;
@@ -763,8 +774,8 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged
                     diffs.items[pointer + 1].text,
                 });
 
-                allocator.free(diffs.items[pointer - 1].text);
-                allocator.free(diffs.items[pointer].text);
+                // allocator.free(diffs.items[pointer - 1].text);
+                // allocator.free(diffs.items[pointer].text);
 
                 diffs.items[pointer - 1].text = pm1t;
                 diffs.items[pointer].text = pt;
@@ -1179,10 +1190,29 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     }
 }
 
+// pub fn main() void {
+//     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+//     defer arena.deinit();
+
+//     var bruh = default.diff(arena.allocator(), "Hello World.", "Goodbye World.", true);
+//     std.log.err("{any}", .{bruh});
+// }
+
 test {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var bruh = default.diff(arena.allocator(), "Hello World.", "Goodbye World.", true);
-    std.log.err("{any}", .{bruh});
+    var bruh = try default.diff(arena.allocator(), "Hello World.", "Goodbye World.", true);
+    try diffCleanupSemantic(arena.allocator(), &bruh);
+    for (bruh.items) |b| {
+        std.log.err("{any}", .{b});
+    }
+
+    // for (bruh.items) |b| {
+    //     std.log.err("{s} {s}", .{ switch (b.operation) {
+    //         .equal => "",
+    //         .insert => "+",
+    //         .delete => "-",
+    //     }, b.text });
+    // }
 }
