@@ -188,8 +188,7 @@ fn diffCompute(
     const long_text = if (before.len > after.len) before else after;
     const short_text = if (before.len > after.len) after else before;
 
-    var short_text_in_long_text_index = std.mem.indexOf(u8, long_text, short_text);
-    if (short_text_in_long_text_index) |index| {
+    if (std.mem.indexOf(u8, long_text, short_text)) |index| {
         // Shorter text is inside the longer text (speedup).
         const op: Diff.Operation = if (before.len > after.len)
             .delete
@@ -210,8 +209,7 @@ fn diffCompute(
     }
 
     // Check to see if the problem can be split in two.
-    var maybe_half_match = try dmp.diffHalfMatch(allocator, before, after);
-    if (maybe_half_match) |half_match| {
+    if (try dmp.diffHalfMatch(allocator, before, after)) |half_match| {
         // A half-match was found, sort out the return data.
 
         // Send both pairs off for separate processing.
@@ -230,7 +228,8 @@ fn diffCompute(
             deadline,
         );
         defer diffs_b.deinit(allocator);
-
+        var tmp_diffs = diffs;
+        defer tmp_diffs.deinit(allocator);
         // Merge the results.
         diffs = diffs_a;
         try diffs.append(allocator, Diff.init(.equal, half_match.common_middle));
@@ -400,10 +399,10 @@ fn diffBisect(
     }
     v1.items[@intCast(usize, v_offset + 1)] = 0;
     v2.items[@intCast(usize, v_offset + 1)] = 0;
-    var delta = before_length - after_length;
+    const delta = before_length - after_length;
     // If the total number of characters is odd, then the front path will
     // collide with the reverse path.
-    var front = (@mod(delta, 2) != 0);
+    const front = delta & 1 == 1;
     // Offsets for start and end of k loop.
     // Prevents mapping of space beyond the grid.
     var k1start: isize = 0;
@@ -448,7 +447,7 @@ fn diffBisect(
                 var k2_offset = v_offset + delta - k1;
                 if (k2_offset >= 0 and k2_offset < v_length and v2.items[@intCast(usize, k2_offset)] != -1) {
                     // Mirror x2 onto top-left coordinate system.
-                    var x2: isize = before_length - v2.items[@intCast(usize, k2_offset)];
+                    const x2 = before_length - v2.items[@intCast(usize, k2_offset)];
                     if (x1 >= x2) {
                         // Overlap detected.
                         return dmp.diffBisectSplit(allocator, before, after, x1, y1, deadline);
@@ -458,11 +457,11 @@ fn diffBisect(
         }
 
         // Walk the reverse path one step.
-        var k2: isize = -@intCast(isize, d) + @intCast(isize, k2start);
+        var k2: isize = -d + k2start;
         while (k2 <= d - k2end) : (k2 += 2) {
-            var k2_offset: isize = @intCast(isize, v_offset) + k2;
+            const k2_offset = v_offset + k2;
             var x2: isize = 0;
-            if (k2 == -@intCast(isize, d) or k2 != d and
+            if (k2 == -d or k2 != d and
                 v2.items[@intCast(usize, k2_offset - 1)] < v2.items[@intCast(usize, k2_offset + 1)])
             {
                 x2 = v2.items[@intCast(usize, k2_offset + 1)];
@@ -470,26 +469,27 @@ fn diffBisect(
                 x2 = v2.items[@intCast(usize, k2_offset - 1)] + 1;
             }
             var y2: isize = x2 - k2;
-            while (x2 < before.len and y2 < after.len and
-                before[@intCast(usize, @intCast(isize, before.len) - x2 - 1)] == after[@intCast(usize, @intCast(isize, after.len) - y2 - 1)])
+            while (x2 < before_length and y2 < after_length and
+                before[@intCast(usize, before_length - x2 - 1)] ==
+                after[@intCast(usize, after_length - y2 - 1)])
             {
                 x2 += 1;
                 y2 += 1;
             }
             v2.items[@intCast(usize, k2_offset)] = x2;
-            if (x2 > before.len) {
+            if (x2 > before_length) {
                 // Ran off the left of the graph.
                 k2end += 2;
-            } else if (y2 > after.len) {
+            } else if (y2 > after_length) {
                 // Ran off the top of the graph.
                 k2start += 2;
             } else if (!front) {
-                var k1_offset: isize = @intCast(isize, v_offset) + delta - k2;
+                const k1_offset = v_offset + delta - k2;
                 if (k1_offset >= 0 and k1_offset < v_length and v1.items[@intCast(usize, k1_offset)] != -1) {
-                    var x1: isize = v1.items[@intCast(usize, k1_offset)];
-                    var y1: isize = @intCast(isize, v_offset) + x1 - k1_offset;
+                    const x1 = v1.items[@intCast(usize, k1_offset)];
+                    const y1 = v_offset + x1 - k1_offset;
                     // Mirror x2 onto top-left coordinate system.
-                    x2 = @intCast(isize, before.len) - v2.items[@intCast(usize, k2_offset)];
+                    x2 = before_length - v2.items[@intCast(usize, k2_offset)];
                     if (x1 >= x2) {
                         // Overlap detected.
                         return dmp.diffBisectSplit(allocator, before, after, x1, y1, deadline);
@@ -937,7 +937,7 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
             length_deletions2 = 0;
             last_equality = diffs.items[@intCast(usize, pointer)].text;
         } else { // an insertion or deletion
-            if (diffs.items[@intCast(usize, pointer)].operation == .equal) {
+            if (diffs.items[@intCast(usize, pointer)].operation == .insert) {
                 length_insertions2 += diffs.items[@intCast(usize, pointer)].text.len;
             } else {
                 length_deletions2 += diffs.items[@intCast(usize, pointer)].text.len;
