@@ -1636,6 +1636,27 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: std.ArrayListUnmanaged(Diff
     };
 }
 
+test diffBisect {
+    // Normal.
+    const a = "cat";
+    const b = "map";
+    // Since the resulting diff hasn't been normalized, it would be ok if
+    // the insertion and deletion pairs are swapped.
+    // If the order changes, tweak this test as required.
+    var diffs = std.ArrayListUnmanaged(Diff){};
+    defer diffs.deinit(talloc);
+    var this = default;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "c"), Diff.init(.insert, "m"), Diff.init(.equal, "a"), Diff.init(.delete, "t"), Diff.init(.insert, "p") });
+    // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
+    try std.testing.expectEqualDeep(diffs, try this.diffBisect(talloc, a, b, std.math.maxInt(u64))); // Normal.
+
+    // Timeout.
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "cat"), Diff.init(.insert, "map") });
+    // Travis TODO not sure if 0 is correct for  DateTime.MinValue
+    try std.testing.expectEqualDeep(diffs, try this.diffBisect(talloc, a, b, 0)); // Timeout.
+}
+
 const talloc = std.testing.allocator;
 test diff {
     // Perform a trivial diff.
