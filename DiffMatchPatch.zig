@@ -1416,12 +1416,92 @@ test diffCharsToLines {
     try tmp_vector.append("beta\n");
     try diffCharsToLines(arena.allocator(), diffs.items, tmp_vector.items);
 
-    try std.testing.expectEqualDeep([_]Diff{
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
         Diff{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
         Diff{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
-    }, diffs.items[0..2].*);
+    }), diffs.items);
 
     // TODO: Implement exhaustive tests
+}
+
+test diffCleanupMerge {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Cleanup a messy diff.
+    var diffs = std.ArrayListUnmanaged(Diff){};
+    try std.testing.expectEqualDeep(@as([]const Diff, &[0]Diff{}), diffs.items); // Null case
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } }), diffs.items); // No change case
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .equal, .text = "b" }, .{ .operation = .equal, .text = "c" } });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{.{ .operation = .equal, .text = "abc" }}), diffs.items); // Merge equalities
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{ .{ .operation = .delete, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .delete, .text = "c" } });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{.{ .operation = .delete, .text = "abc" }}), diffs.items); // Merge deletions
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{ .{ .operation = .insert, .text = "a" }, .{ .operation = .insert, .text = "b" }, .{ .operation = .insert, .text = "c" } });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{.{ .operation = .insert, .text = "abc" }}), diffs.items); // Merge insertions
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{
+        .{ .operation = .delete, .text = "a" },
+        .{ .operation = .insert, .text = "b" },
+        .{ .operation = .delete, .text = "c" },
+        .{ .operation = .insert, .text = "d" },
+        .{ .operation = .equal, .text = "e" },
+        .{ .operation = .equal, .text = "f" },
+    });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .delete, .text = "ac" },
+        .{ .operation = .insert, .text = "bd" },
+        .{ .operation = .equal, .text = "ef" },
+    }), diffs.items); // Merge interweave
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{
+        .{ .operation = .delete, .text = "a" },
+        .{ .operation = .insert, .text = "abc" },
+        .{ .operation = .delete, .text = "dc" },
+    });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .equal, .text = "a" },
+        .{ .operation = .delete, .text = "d" },
+        .{ .operation = .insert, .text = "b" },
+        .{ .operation = .equal, .text = "c" },
+    }), diffs.items); // Prefix and suffix detection
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &[_]Diff{
+        .{ .operation = .equal, .text = "x" },
+        .{ .operation = .delete, .text = "a" },
+        .{ .operation = .insert, .text = "abc" },
+        .{ .operation = .delete, .text = "dc" },
+        .{ .operation = .equal, .text = "y" },
+    });
+    try diffCleanupMerge(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .equal, .text = "xa" },
+        .{ .operation = .delete, .text = "d" },
+        .{ .operation = .insert, .text = "b" },
+        .{ .operation = .equal, .text = "cy" },
+    }), diffs.items); // Prefix and suffix detection with equalities
 }
 
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: std.ArrayListUnmanaged(Diff)) ![2][]const u8 {
