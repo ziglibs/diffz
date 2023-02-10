@@ -606,7 +606,7 @@ fn diffCharsToLines(allocator: std.mem.Allocator, diffs: []Diff, line_array: []c
 // Any edit section can move as long as it doesn't cross an equality.
 // @param diffs List of Diff objects.
 //
-fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged(Diff)) !void {
+fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged(Diff)) error{OutOfMemory}!void {
     // Add a dummy entry at the end.
     try diffs.append(allocator, Diff{ .operation = .equal, .text = "" });
     var pointer: usize = 0;
@@ -819,10 +819,10 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *ArrayListUnmanaged(
                     // Reverse overlap found.
                     // Insert an equality and swap and trim the surrounding edits.
                     diffs.Insert(pointer, Diff{ .operation = .equal, .text = deletion.Substring(0, overlap_length2) });
-                    diffs.items[pointer - 1].operation = Operation.INSERT;
+                    diffs.items[pointer - 1].operation = .insert;
                     diffs.items[pointer - 1].text =
                         insertion.Substring(0, insertion.len - overlap_length2);
-                    diffs.items[pointer + 1].operation = Operation.DELETE;
+                    diffs.items[pointer + 1].operation = .delete;
                     diffs.items[pointer + 1].text = deletion.Substring(overlap_length2);
                     pointer += 1;
                 }
@@ -947,7 +947,7 @@ pub fn diffCleanupSemanticLossless(
 // @param two Second string.
 // @return The score.
 //
-fn cleanupSemanticScore(one: []const u8, two: []const u8) usize {
+fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     if (one.len == 0 or two.len == 0) {
         // Edges are the best.
         return 6;
@@ -968,10 +968,10 @@ fn cleanupSemanticScore(one: []const u8, two: []const u8) usize {
     const lineBreak2 = whitespace2 and std.ascii.isControl(char2);
     const blankLine1 = lineBreak1 and
         // BLANKLINEEND.IsMatch(one);
-        (mem.endsWith(u8, "\n") or mem.endsWith(u8, "\r\n"));
+        (std.mem.endsWith(u8, "\n") or std.mem.endsWith(u8, "\r\n"));
     const blankLine2 = lineBreak2 and
         // BLANKLINESTART.IsMatch(two);
-        (mem.startsWith(u8, "\n") or mem.startsWith(u8, "\r\n"));
+        (std.mem.startsWith(u8, "\n") or std.mem.startsWith(u8, "\r\n"));
 
     if (blankLine1 or blankLine2) {
         // Five points for blank lines.
@@ -998,13 +998,17 @@ fn cleanupSemanticScore(one: []const u8, two: []const u8) usize {
 
 /// Reduce the number of edits by eliminating operationally trivial
 /// equalities.
-pub fn diffCleanupEfficiency(allocator: std.mem.Allocator, diffs: *ArrayListUnmanaged(Diff)) error{OutOfMemory}!void {
+pub fn diffCleanupEfficiency(
+    dmp: DiffMatchPatch,
+    allocator: std.mem.Allocator,
+    diffs: *ArrayListUnmanaged(Diff),
+) error{OutOfMemory}!void {
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities = ArrayListUnmanaged(Diff){};
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality = "";
-    var pointer: usize = 0; // Index of current position.
+    var pointer: isize = 0; // Index of current position.
     // Is there an insertion operation before the last equality.
     var pre_ins = false;
     // Is there a deletion operation before the last equality.
@@ -1014,8 +1018,8 @@ pub fn diffCleanupEfficiency(allocator: std.mem.Allocator, diffs: *ArrayListUnma
     // Is there a deletion operation after the last equality.
     var post_del = false;
     while (pointer < diffs.Count) {
-        if (diffs[pointer].operation == Operation.EQUAL) { // Equality found.
-            if (diffs[pointer].text.Length < this.Diff_EditCost and (post_ins or post_del)) {
+        if (diffs.items[pointer].operation == .equal) { // Equality found.
+            if (diffs[pointer].text.len < dmp.diff_edit_cost and (post_ins or post_del)) {
                 // Candidate found.
                 equalities.Push(pointer);
                 pre_ins = post_ins;
@@ -1023,13 +1027,13 @@ pub fn diffCleanupEfficiency(allocator: std.mem.Allocator, diffs: *ArrayListUnma
                 last_equality = diffs[pointer].text;
             } else {
                 // Not a candidate, and can never become one.
-                equalities.Clear();
-                last_equality = string.Empty;
+                equalities.items.len = 0;
+                last_equality = "";
             }
             post_ins = false;
             post_del = false;
         } else { // An insertion or deletion.
-            if (diffs[pointer].operation == Operation.DELETE) {
+            if (diffs.items[pointer].operation == .delete) {
                 post_del = true;
             } else {
                 post_ins = true;
@@ -1040,24 +1044,28 @@ pub fn diffCleanupEfficiency(allocator: std.mem.Allocator, diffs: *ArrayListUnma
             // <ins>A</ins><del>B</del>X<ins>C</ins>
             // <ins>A</del>X<ins>C</ins><del>D</del>
             // <ins>A</ins><del>B</del>X<del>C</del>
-            if ((last_equality.Length != 0) and ((pre_ins and pre_del and post_ins and post_del) or ((last_equality.Length < this.Diff_EditCost / 2) and ((if (pre_ins) 1 else 0) + (if (pre_del) 1 else 0) + (if (post_ins) 1 else 0) + (if (post_del) 1 else 0)) == 3))) {
+            if ((last_equality.Length != 0) and ((pre_ins and pre_del and post_ins and post_del) or ((last_equality.Length < dmp.diff_edit_cost / 2) and ((if (pre_ins) 1 else 0) + (if (pre_del) 1 else 0) + (if (post_ins) 1 else 0) + (if (post_del) 1 else 0)) == 3))) {
                 // Duplicate record.
-                diffs.Insert(equalities.Peek(), Diff(Operation.DELETE, last_equality));
+                try diffs.insert(
+                    allocator,
+                    equalities.items[equalities.items.len - 1],
+                    Diff{ .operation = .delete, .text = try allocator.dupe(u8, last_equality) },
+                );
                 // Change second copy to insert.
-                diffs[equalities.Peek() + 1].operation = Operation.INSERT;
-                equalities.Pop(); // Throw away the equality we just deleted.
-                last_equality = string.Empty;
+                diffs[equalities.items[equalities.items.len - 1] + 1].operation = .insert;
+                _ = equalities.pop(); // Throw away the equality we just deleted.
+                last_equality = "";
                 if (pre_ins and pre_del) {
                     // No changes made which could affect previous entry, keep going.
                     post_ins = true;
                     post_del = true;
-                    equalities.Clear();
+                    equalities.items.len = 0;
                 } else {
-                    if (equalities.Count > 0) {
-                        equalities.Pop();
+                    if (equalities.items.len > 0) {
+                        _ = equalities.pop();
                     }
 
-                    pointer = if (equalities.Count > 0) equalities.Peek() else -1;
+                    pointer = if (equalities.items.len > 0) equalities.items[equalities.items.len - 1] else -1;
                     post_ins = false;
                     post_del = false;
                 }
@@ -1068,6 +1076,6 @@ pub fn diffCleanupEfficiency(allocator: std.mem.Allocator, diffs: *ArrayListUnma
     }
 
     if (changes) {
-        diffCleanupMerge(allocator, diffs);
+        try diffCleanupMerge(allocator, diffs);
     }
 }
