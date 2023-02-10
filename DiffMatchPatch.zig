@@ -28,6 +28,9 @@ pub const Diff = struct {
         });
     }
 
+    pub fn init(operation: Operation, text: []const u8) Diff {
+        return .{ .operation = operation, .text = text };
+    }
     pub fn eql(a: Diff, b: Diff) bool {
         return a.operation == b.operation and std.mem.eql(u8, a.text, b.text);
     }
@@ -1419,4 +1422,129 @@ test diffCharsToLines {
     }, diffs.items[0..2].*);
 
     // TODO: Implement exhaustive tests
+}
+
+fn rebuildtexts(allocator: std.mem.Allocator, diffs: std.ArrayListUnmanaged(Diff)) ![2][]const u8 {
+    var text = [2]std.ArrayList(u8){
+        std.ArrayList(u8).init(allocator),
+        std.ArrayList(u8).init(allocator),
+    };
+
+    for (diffs.items) |myDiff| {
+        if (myDiff.operation != .insert) {
+            try text[0].appendSlice(myDiff.text);
+        }
+        if (myDiff.operation != .delete) {
+            try text[1].appendSlice(myDiff.text);
+        }
+    }
+    return .{
+        try text[0].toOwnedSlice(),
+        try text[1].toOwnedSlice(),
+    };
+}
+
+const talloc = std.testing.allocator;
+test diff {
+    // Perform a trivial diff.
+    var diffs = std.ArrayListUnmanaged(Diff){};
+    defer diffs.deinit(talloc);
+    var this = DiffMatchPatch{};
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "", "", false)); // diff: Null case.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{Diff.init(.equal, "abc")});
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "abc", "abc", false)); // diff: Equality.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.equal, "ab"), Diff.init(.insert, "123"), Diff.init(.equal, "c") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "abc", "ab123c", false)); // diff: Simple insertion.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.equal, "a"), Diff.init(.delete, "123"), Diff.init(.equal, "bc") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "a123bc", "abc", false)); // diff: Simple deletion.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.equal, "a"), Diff.init(.insert, "123"), Diff.init(.equal, "b"), Diff.init(.insert, "456"), Diff.init(.equal, "c") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "abc", "a123b456c", false)); // diff: Two insertions.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.equal, "a"), Diff.init(.delete, "123"), Diff.init(.equal, "b"), Diff.init(.delete, "456"), Diff.init(.equal, "c") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "a123b456c", "abc", false)); // diff: Two deletions.
+
+    // Perform a real diff.
+    // Switch off the timeout.
+    this.diff_timeout = 0;
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "a"), Diff.init(.insert, "b") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "a", "b", false)); // diff: Simple case #1.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "Apple"), Diff.init(.insert, "Banana"), Diff.init(.equal, "s are a"), Diff.init(.insert, "lso"), Diff.init(.equal, " fruit.") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "Apples are a fruit.", "Bananas are also fruit.", false)); // diff: Simple case #2.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "a"), Diff.init(.insert, "\u{0680}"), Diff.init(.equal, "x"), Diff.init(.delete, "\t"), Diff.init(.insert, "\x00") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "ax\t", "\u{0680}x\x00", false)); // diff: Simple case #3.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "1"), Diff.init(.equal, "a"), Diff.init(.delete, "y"), Diff.init(.equal, "b"), Diff.init(.delete, "2"), Diff.init(.insert, "xab") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "1ayb2", "abxab", false)); // diff: Overlap #1.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.insert, "xaxcx"), Diff.init(.equal, "abc"), Diff.init(.delete, "y") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "abcy", "xaxcxabc", false)); // diff: Overlap #2.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "ABCD"), Diff.init(.equal, "a"), Diff.init(.delete, "="), Diff.init(.insert, "-"), Diff.init(.equal, "bcd"), Diff.init(.delete, "="), Diff.init(.insert, "-"), Diff.init(.equal, "efghijklmnopqrs"), Diff.init(.delete, "EFGHIJKLMNOefg") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false)); // diff: Overlap #3.
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.insert, " "), Diff.init(.equal, "a"), Diff.init(.insert, "nd"), Diff.init(.equal, " [[Pennsylvania]]"), Diff.init(.delete, " and [[New") });
+    try std.testing.expectEqualDeep(diffs, try this.diff(talloc, "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)); // diff: Large equality.
+
+    this.diff_timeout = 100 * std.time.ms_per_s; // 100ms
+    // Increase the text lengths by 1024 times to ensure a timeout.
+    {
+        const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 10;
+        const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 10;
+        const start_time = std.time.milliTimestamp();
+        _ = try this.diff(talloc, a, b, false); // Travis - TODO not sure what the third arg should be
+        const end_time = std.time.milliTimestamp();
+        // Test that we took at least the timeout period.
+        try std.testing.expect((this.diff_timeout * 1000) * 10000 <= end_time - start_time); // diff: Timeout min.
+        // Test that we didn't take forever (be forgiving).
+        // Theoretically this test could fail very occasionally if the
+        // OS task swaps or locks up for a second at the wrong moment.
+        try std.testing.expect((this.diff_timeout * 1000) * 10000 * 2 > end_time - start_time); // diff: Timeout max.
+        this.diff_timeout = 0;
+    }
+    {
+        // Test the linemode speedup.
+        // Must be long to pass the 100 char cutoff.
+        const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
+        const b = "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n";
+        try std.testing.expectEqualDeep(try this.diff(talloc, a, b, true), try this.diff(talloc, a, b, false)); // diff: Simple line-mode.
+    }
+    {
+        const a = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
+        const b = "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
+        try std.testing.expectEqualDeep(try this.diff(talloc, a, b, true), try this.diff(talloc, a, b, false)); // diff: Single line-mode.
+    }
+
+    const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
+    const b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n";
+    const texts_linemode = try rebuildtexts(talloc, try this.diff(talloc, a, b, true));
+    defer {
+        talloc.free(texts_linemode[0]);
+        talloc.free(texts_linemode[1]);
+    }
+    const texts_textmode = try rebuildtexts(talloc, try this.diff(talloc, a, b, false));
+    defer {
+        talloc.free(texts_textmode[0]);
+        talloc.free(texts_textmode[1]);
+    }
+    try std.testing.expectEqualDeep(texts_textmode, texts_linemode); // diff: Overlap line-mode.
+
+    // Test null inputs -- not needed because nulls can't be passed in C#.
 }
