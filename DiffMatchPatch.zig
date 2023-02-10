@@ -27,6 +27,10 @@ pub const Diff = struct {
             value.text,
         });
     }
+
+    pub fn eql(a: Diff, b: Diff) bool {
+        return a.operation == b.operation and std.mem.eql(u8, a.text, b.text);
+    }
 };
 
 /// Number of microseconds to map a diff before giving up (0 for infinity).
@@ -1386,4 +1390,33 @@ test diffLinesToChars {
     // try testing.expectEqualStrings(char_list.items, result.chars_1);
     // try testing.expectEqualStrings("", result.chars_2);
     // try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items);
+}
+
+test diffCharsToLines {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try std.testing.expect((Diff{ .operation = .equal, .text = "a" }).eql(Diff{ .operation = .equal, .text = "a" }));
+    try std.testing.expect(!(Diff{ .operation = .insert, .text = "a" }).eql(Diff{ .operation = .equal, .text = "a" }));
+    try std.testing.expect(!(Diff{ .operation = .equal, .text = "a" }).eql(Diff{ .operation = .equal, .text = "b" }));
+    try std.testing.expect(!(Diff{ .operation = .equal, .text = "a" }).eql(Diff{ .operation = .delete, .text = "b" }));
+
+    // Convert chars up to lines.
+    var diffs = std.ArrayList(Diff).init(arena.allocator());
+    try diffs.appendSlice(&.{
+        Diff{ .operation = .equal, .text = try arena.allocator().dupe(u8, "\u{0001}\u{0002}\u{0001}") },
+        Diff{ .operation = .insert, .text = try arena.allocator().dupe(u8, "\u{0002}\u{0001}\u{0002}") },
+    });
+    var tmp_vector = std.ArrayList([]const u8).init(arena.allocator());
+    try tmp_vector.append("");
+    try tmp_vector.append("alpha\n");
+    try tmp_vector.append("beta\n");
+    try diffCharsToLines(arena.allocator(), diffs.items, tmp_vector.items);
+
+    try std.testing.expectEqualDeep([_]Diff{
+        Diff{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
+        Diff{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
+    }, diffs.items[0..2].*);
+
+    // TODO: Implement exhaustive tests
 }
