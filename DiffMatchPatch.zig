@@ -938,3 +938,60 @@ pub fn diffCleanupSemanticLossless(
         pointer += 1;
     }
 }
+
+//
+// Given two strings, compute a score representing whether the internal
+// boundary falls on logical boundaries.
+// Scores range from 6 (best) to 0 (worst).
+// @param one First string.
+// @param two Second string.
+// @return The score.
+//
+fn cleanupSemanticScore(one: []const u8, two: []const u8) usize {
+    if (one.len == 0 or two.len == 0) {
+        // Edges are the best.
+        return 6;
+    }
+
+    // Each port of this function behaves slightly differently due to
+    // subtle differences in each language's definition of things like
+    // 'whitespace'.  Since this function's purpose is largely cosmetic,
+    // the choice has been made to use each language's native features
+    // rather than force total conformity.
+    const char1 = one[one.len - 1];
+    const char2 = two[0];
+    const nonAlphaNumeric1 = !std.ascii.isAlphanumeric(char1);
+    const nonAlphaNumeric2 = !std.ascii.isAlphanumeric(char2);
+    const whitespace1 = nonAlphaNumeric1 and std.ascii.isWhitespace(char1);
+    const whitespace2 = nonAlphaNumeric2 and std.ascii.isWhitespace(char2);
+    const lineBreak1 = whitespace1 and std.ascii.isControl(char1);
+    const lineBreak2 = whitespace2 and std.ascii.isControl(char2);
+    const blankLine1 = lineBreak1 and
+        // BLANKLINEEND.IsMatch(one);
+        (mem.endsWith(u8, "\n") or mem.endsWith(u8, "\r\n"));
+    const blankLine2 = lineBreak2 and
+        // BLANKLINESTART.IsMatch(two);
+        (mem.startsWith(u8, "\n") or mem.startsWith(u8, "\r\n"));
+
+    if (blankLine1 or blankLine2) {
+        // Five points for blank lines.
+        return 5;
+    } else if (lineBreak1 or lineBreak2) {
+        // Four points for line breaks.
+        return 4;
+    } else if (nonAlphaNumeric1 and !whitespace1 and whitespace2) {
+        // Three points for end of sentences.
+        return 3;
+    } else if (whitespace1 or whitespace2) {
+        // Two points for whitespace.
+        return 2;
+    } else if (nonAlphaNumeric1 or nonAlphaNumeric2) {
+        // One point for non-alphanumeric.
+        return 1;
+    }
+    return 0;
+}
+
+// Define some regex patterns for matching boundaries.
+// private Regex BLANKLINEEND = new Regex("\\n\\r?\\n\\Z");
+// private Regex BLANKLINESTART = new Regex("\\A\\r?\\n\\r?\\n");
