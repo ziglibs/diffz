@@ -941,9 +941,12 @@ pub fn diffCleanupSemanticLossless(
                 equality_1.items.len = equality_1.items.len - common_offset;
 
                 // edit.items.len = edit.items.len - common_offset;
+                const not_common = try allocator.dupe(u8, edit.items[0 .. edit.items.len - common_offset]);
+                defer allocator.free(not_common);
+
                 edit.items.len = 0;
                 try edit.appendSlice(allocator, common_string);
-                try edit.appendSlice(allocator, common_string);
+                try edit.appendSlice(allocator, not_common);
 
                 try equality_2.insertSlice(allocator, 0, common_string);
             }
@@ -1041,10 +1044,10 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     const lineBreak2 = whitespace2 and std.ascii.isControl(char2);
     const blankLine1 = lineBreak1 and
         // BLANKLINEEND.IsMatch(one);
-        (std.mem.endsWith(u8, one, "\n") or std.mem.endsWith(u8, one, "\r\n"));
+        (std.mem.endsWith(u8, one, "\n\n") or std.mem.endsWith(u8, one, "\n\r\n"));
     const blankLine2 = lineBreak2 and
         // BLANKLINESTART.IsMatch(two);
-        (std.mem.startsWith(u8, two, "\n") or std.mem.startsWith(u8, two, "\r\n"));
+        (std.mem.startsWith(u8, two, "\n\n") or std.mem.startsWith(u8, two, "\r\n\n") or std.mem.startsWith(u8, two, "\n\r\n") or std.mem.startsWith(u8, two, "\r\n\r\n"));
 
     if (blankLine1 or blankLine2) {
         // Five points for blank lines.
@@ -1067,7 +1070,13 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
 
 // Define some regex patterns for matching boundaries.
 // private Regex BLANKLINEEND = new Regex("\\n\\r?\\n\\Z");
+// \n\n
+// \n\r\n
 // private Regex BLANKLINESTART = new Regex("\\A\\r?\\n\\r?\\n");
+// \n\n
+// \r\n\n
+// \n\r\n
+// \r\n\r\n
 
 /// Reduce the number of edits by eliminating operationally trivial
 /// equalities.
