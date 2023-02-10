@@ -746,15 +746,14 @@ fn diffCleanupMerge(diffs: std.ArrayListUnmanaged(Diff), allocator: mem.Allocato
                     }
                     // Delete the offending records and add the merged ones.
                     pointer -= count_delete + count_insert;
-                    Splice(diffs, pointer, count_delete + count_insert);
-                    // diffs.insertSlice(allocator, pointer, items: []const T)
+                    try diffs.replaceRange(allocator, pointer, count_delete + count_insert, &.{});
 
                     if (text_delete.items.len != 0) {
-                        Splice(diffs, pointer, 0, Diff{ .operation = .delete, .text = text_delete });
+                        try diffs.replaceRange(allocator, pointer, 0, &.{Diff{ .operation = .delete, .text = text_delete }});
                         pointer += 1;
                     }
                     if (text_insert.Length != 0) {
-                        diffs.Splice(pointer, 0, Diff{ .operation = .insert, .text = text_insert });
+                        try diffs.replaceRange(allocator, pointer, 0, &.{Diff{ .operation = .insert, .text = text_insert }});
                         pointer += 1;
                     }
                     pointer += 1;
@@ -793,14 +792,14 @@ fn diffCleanupMerge(diffs: std.ArrayListUnmanaged(Diff), allocator: mem.Allocato
                     diffs[pointer].text.Substring(0, diffs[pointer].text.Length -
                     diffs[pointer - 1].text.Length);
                 diffs[pointer + 1].text = diffs[pointer - 1].text + diffs[pointer + 1].text;
-                diffs.Splice(pointer - 1, 1);
+                try diffs.replaceRange(allocator, pointer - 1, 1, &.{});
                 changes = true;
             } else if (mem.startsWith(u8, diffs[pointer].text.items, diffs[pointer + 1].text.items)) {
                 // Shift the edit over the next equality.
                 diffs[pointer - 1].text += diffs[pointer + 1].text;
                 diffs[pointer].text =
                     diffs[pointer].text.Substring(diffs[pointer + 1].text.Length) + diffs[pointer + 1].text;
-                diffs.Splice(pointer + 1, 1);
+                try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
                 changes = true;
             }
         }
