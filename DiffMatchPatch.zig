@@ -1079,3 +1079,49 @@ pub fn diffCleanupEfficiency(
         try diffCleanupMerge(allocator, diffs);
     }
 }
+
+//
+// Determine if the suffix of one string is the prefix of another.
+// @param text1 First string.
+// @param text2 Second string.
+// @return The number of characters common to the end of the first
+//     string and the start of the second string.
+//
+fn diffCommonOverlap(text1: []const u8, text2: []const u8) usize {
+    // Cache the text lengths to prevent multiple calls.
+    var text1_length = text1.len;
+    var text2_length = text2.len;
+    // Eliminate the null case.
+    if (text1_length == 0 or text2_length == 0) {
+        return 0;
+    }
+    // Truncate the longer string.
+    if (text1_length > text2_length) {
+        text1 = text1[text1_length - text2_length ..];
+    } else if (text1_length < text2_length) {
+        text2 = text2[0..text1_length];
+    }
+    const text_length = @min(text1_length, text2_length);
+    // Quick check for the worst case.
+    if (text1 == text2) {
+        return text_length;
+    }
+
+    // Start by looking for a single character match
+    // and increase length until no match is found.
+    // Performance analysis: https://neil.fraser.name/news/2010/11/04/
+    var best: usize = 0;
+    var length: usize = 1;
+    while (true) {
+        const pattern = text1[text_length - length ..];
+        const found = mem.indexOf(u8, text2, pattern) orelse
+            return best;
+
+        length += found;
+
+        if (found == 0 or mem.eql(u8, text1[text_length - length ..], text2[0..length])) {
+            best = length;
+            length += 1;
+        }
+    }
+}
