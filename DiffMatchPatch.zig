@@ -326,34 +326,36 @@ fn diffBisect(
     after: []const u8,
     deadline: u64,
 ) error{OutOfMemory}!ArrayListUnmanaged(Diff) {
-    const max_d = (before.len + after.len + 1) / 2;
+    const before_length = @intCast(isize, before.len);
+    const after_length = @intCast(isize, after.len);
+    const max_d = @intCast(isize, (before.len + after.len + 1) / 2);
     const v_offset = max_d;
     const v_length = 2 * max_d;
 
-    var v1 = try ArrayListUnmanaged(isize).initCapacity(allocator, v_length);
-    v1.items.len = v_length;
-    var v2 = try ArrayListUnmanaged(isize).initCapacity(allocator, v_length);
-    v2.items.len = v_length;
+    var v1 = try ArrayListUnmanaged(isize).initCapacity(allocator, @intCast(usize, v_length));
+    v1.items.len = @intCast(usize, v_length);
+    var v2 = try ArrayListUnmanaged(isize).initCapacity(allocator, @intCast(usize, v_length));
+    v2.items.len = @intCast(usize, v_length);
 
     var x: usize = 0;
     while (x < v_length) : (x += 1) {
         v1.items[x] = -1;
         v2.items[x] = -1;
     }
-    v1.items[v_offset + 1] = 0;
-    v2.items[v_offset + 1] = 0;
-    var delta = @intCast(isize, before.len) - @intCast(isize, after.len);
+    v1.items[@intCast(usize, v_offset + 1)] = 0;
+    v2.items[@intCast(usize, v_offset + 1)] = 0;
+    var delta = before_length - after_length;
     // If the total number of characters is odd, then the front path will
     // collide with the reverse path.
     var front = (@mod(delta, 2) != 0);
     // Offsets for start and end of k loop.
     // Prevents mapping of space beyond the grid.
-    var k1start: usize = 0;
-    var k1end: usize = 0;
-    var k2start: usize = 0;
-    var k2end: usize = 0;
+    var k1start: isize = 0;
+    var k1end: isize = 0;
+    var k2start: isize = 0;
+    var k2end: isize = 0;
 
-    var d: usize = 0;
+    var d: isize = 0;
     while (d < max_d) : (d += 1) {
         // Bail out if deadline is reached.
         if (@intCast(u64, std.time.microTimestamp()) > deadline) {
@@ -361,32 +363,32 @@ fn diffBisect(
         }
 
         // Walk the front path one step.
-        var k1: isize = -@intCast(isize, d) + @intCast(isize, k1start);
+        var k1 = -d + k1start;
         while (k1 <= d - k1end) : (k1 += 2) {
-            var k1_offset: isize = @intCast(isize, v_offset) + k1;
+            var k1_offset = v_offset + k1;
             var x1: isize = 0;
-            if (k1 == -@intCast(isize, d) or k1 != d and v1.items[@intCast(usize, k1_offset - 1)] < v1.items[@intCast(usize, k1_offset + 1)]) {
+            if (k1 == -d or k1 != d and v1.items[@intCast(usize, k1_offset - 1)] < v1.items[@intCast(usize, k1_offset + 1)]) {
                 x1 = v1.items[@intCast(usize, k1_offset + 1)];
             } else {
                 x1 = v1.items[@intCast(usize, k1_offset - 1)] + 1;
             }
-            var y1: isize = x1 - k1;
-            while (x1 < before.len and y1 < after.len and before[@intCast(usize, x1)] == after[@intCast(usize, y1)]) {
+            var y1 = x1 - k1;
+            while (x1 < before_length and y1 < after_length and before[@intCast(usize, x1)] == after[@intCast(usize, y1)]) {
                 x1 += 1;
                 y1 += 1;
             }
             v1.items[@intCast(usize, k1_offset)] = x1;
-            if (x1 > before.len) {
+            if (x1 > before_length) {
                 // Ran off the right of the graph.
                 k1end += 2;
-            } else if (y1 > after.len) {
+            } else if (y1 > after_length) {
                 // Ran off the bottom of the graph.
                 k1start += 2;
             } else if (front) {
-                var k2_offset: isize = @intCast(isize, v_offset) + delta - k1;
+                var k2_offset = v_offset + delta - k1;
                 if (k2_offset >= 0 and k2_offset < v_length and v2.items[@intCast(usize, k2_offset)] != -1) {
                     // Mirror x2 onto top-left coordinate system.
-                    var x2: isize = @intCast(isize, before.len) - v2.items[@intCast(usize, k2_offset)];
+                    var x2: isize = before_length - v2.items[@intCast(usize, k2_offset)];
                     if (x1 >= x2) {
                         // Overlap detected.
                         return dmp.diffBisectSplit(allocator, before, after, x1, y1, deadline);
@@ -676,7 +678,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *std.ArrayListUnmanaged
                                 // allocator.free(diffs.items[ii].text);
                                 diffs.items[ii].text = nt;
                             } else {
-                                // diffs.Insert(0, new Diff(Operation.EQUAL,
+                                // diffs.Insert(0, Diff.init(.equal,
                                 //    text_insert.Substring(0, common_length)));
                                 const text = std.ArrayListUnmanaged(u8){ .items = try allocator.dupe(u8, text_insert.items[0..common_length]) };
                                 try diffs.insert(allocator, 0, Diff{ .operation = .equal, .text = try allocator.dupe(u8, text.items) });
@@ -912,7 +914,7 @@ pub fn diffCleanupSemanticLossless(
 ) error{OutOfMemory}!void {
     var pointer: usize = 1;
     // Intentionally ignore the first and last element (don't need checking).
-    while (pointer < diffs.items.len - 1) {
+    while (pointer < @intCast(isize, diffs.items.len) - 1) {
         if (diffs.items[pointer - 1].operation == .equal and
             diffs.items[pointer + 1].operation == .equal)
         {
@@ -938,8 +940,10 @@ pub fn diffCleanupSemanticLossless(
 
                 equality_1.items.len = equality_1.items.len - common_offset;
 
-                edit.items.len = edit.items.len - common_offset;
-                try edit.insertSlice(allocator, 0, common_string);
+                // edit.items.len = edit.items.len - common_offset;
+                edit.items.len = 0;
+                try edit.appendSlice(allocator, common_string);
+                try edit.appendSlice(allocator, common_string);
 
                 try equality_2.insertSlice(allocator, 0, common_string);
             }
@@ -1616,6 +1620,111 @@ test diffCleanupMerge {
     }), diffs.items); // Empty equality
 }
 
+test diffCleanupSemanticLossless {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var diffs = std.ArrayListUnmanaged(Diff){};
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[0]Diff{}), diffs.items); // Null case
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "AAA\r\n\r\nBBB"),
+        Diff.init(.insert, "\r\nDDD\r\n\r\nBBB"),
+        Diff.init(.equal, "\r\nEEE"),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "AAA\r\n\r\n"),
+        Diff.init(.insert, "BBB\r\nDDD\r\n\r\n"),
+        Diff.init(.equal, "BBB\r\nEEE"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "AAA\r\nBBB"),
+        Diff.init(.insert, " DDD\r\nBBB"),
+        Diff.init(.equal, " EEE"),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "AAA\r\n"),
+        Diff.init(.insert, "BBB DDD\r\n"),
+        Diff.init(.equal, "BBB EEE"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "The c"),
+        Diff.init(.insert, "ow and the c"),
+        Diff.init(.equal, "at."),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "The "),
+        Diff.init(.insert, "cow and the "),
+        Diff.init(.equal, "cat."),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "The-c"),
+        Diff.init(.insert, "ow-and-the-c"),
+        Diff.init(.equal, "at."),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "The-"),
+        Diff.init(.insert, "cow-and-the-"),
+        Diff.init(.equal, "cat."),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "a"),
+        Diff.init(.delete, "a"),
+        Diff.init(.equal, "ax"),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.delete, "a"),
+        Diff.init(.equal, "aax"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "xa"),
+        Diff.init(.delete, "a"),
+        Diff.init(.equal, "a"),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "xaa"),
+        Diff.init(.delete, "a"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+
+    try diffs.appendSlice(arena.allocator(), &.{
+        Diff.init(.equal, "The xxx. The "),
+        Diff.init(.insert, "zzz. The "),
+        Diff.init(.equal, "yyy."),
+    });
+    try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "The xxx."),
+        Diff.init(.insert, " The zzz."),
+        Diff.init(.equal, " The yyy."),
+    }), diffs.items);
+}
+
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: std.ArrayListUnmanaged(Diff)) ![2][]const u8 {
     var text = [2]std.ArrayList(u8){
         std.ArrayList(u8).init(allocator),
@@ -1637,6 +1746,9 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: std.ArrayListUnmanaged(Diff
 }
 
 test diffBisect {
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+
     // Normal.
     const a = "cat";
     const b = "map";
@@ -1644,17 +1756,17 @@ test diffBisect {
     // the insertion and deletion pairs are swapped.
     // If the order changes, tweak this test as required.
     var diffs = std.ArrayListUnmanaged(Diff){};
-    defer diffs.deinit(talloc);
+    defer diffs.deinit(arena.allocator());
     var this = default;
-    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "c"), Diff.init(.insert, "m"), Diff.init(.equal, "a"), Diff.init(.delete, "t"), Diff.init(.insert, "p") });
+    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "c"), Diff.init(.insert, "m"), Diff.init(.equal, "a"), Diff.init(.delete, "t"), Diff.init(.insert, "p") });
     // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
-    try std.testing.expectEqualDeep(diffs, try this.diffBisect(talloc, a, b, std.math.maxInt(u64))); // Normal.
+    try std.testing.expectEqualDeep(diffs, try this.diffBisect(arena.allocator(), a, b, std.math.maxInt(u64))); // Normal.
 
     // Timeout.
     diffs.items.len = 0;
-    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "cat"), Diff.init(.insert, "map") });
+    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "cat"), Diff.init(.insert, "map") });
     // Travis TODO not sure if 0 is correct for  DateTime.MinValue
-    try std.testing.expectEqualDeep(diffs, try this.diffBisect(talloc, a, b, 0)); // Timeout.
+    try std.testing.expectEqualDeep(diffs, try this.diffBisect(arena.allocator(), a, b, 0)); // Timeout.
 }
 
 const talloc = std.testing.allocator;
