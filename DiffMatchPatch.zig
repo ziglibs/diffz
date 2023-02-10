@@ -1873,3 +1873,105 @@ test diff {
 
     // Test null inputs -- not needed because nulls can't be passed in C#.
 }
+
+test diffCleanupSemantic {
+    // Cleanup semantically trivial equalities.
+    // Null case.
+    var diffs = std.ArrayListUnmanaged(Diff){};
+    defer diffs.deinit(talloc);
+    // var this = default;
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqual(@as(usize, 0), diffs.items.len); // Null case
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "ab"), Diff.init(.insert, "cd"), Diff.init(.equal, "12"), Diff.init(.delete, "e") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #1
+        Diff.init(.delete, "ab"),
+        Diff.init(.insert, "cd"),
+        Diff.init(.equal, "12"),
+        Diff.init(.delete, "e"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "abc"), Diff.init(.insert, "ABC"), Diff.init(.equal, "1234"), Diff.init(.delete, "wxyz") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #2
+        Diff.init(.delete, "abc"),
+        Diff.init(.insert, "ABC"),
+        Diff.init(.equal, "1234"),
+        Diff.init(.delete, "wxyz"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "a"), Diff.init(.equal, "b"), Diff.init(.delete, "c") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Simple elimination
+        Diff.init(.delete, "abc"),
+        Diff.init(.insert, "b"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "ab"), Diff.init(.equal, "cd"), Diff.init(.delete, "e"), Diff.init(.equal, "f"), Diff.init(.insert, "g") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Backpass elimination
+        Diff.init(.delete, "abcdef"),
+        Diff.init(.insert, "cdfg"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.insert, "1"), Diff.init(.equal, "A"), Diff.init(.delete, "B"), Diff.init(.insert, "2"), Diff.init(.equal, "_"), Diff.init(.insert, "1"), Diff.init(.equal, "A"), Diff.init(.delete, "B"), Diff.init(.insert, "2") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Multiple elimination
+        Diff.init(.delete, "AB_AB"),
+        Diff.init(.insert, "1A2_1A2"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.equal, "The c"), Diff.init(.delete, "ow and the c"), Diff.init(.equal, "at.") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Word boundaries
+        Diff.init(.equal, "The "),
+        Diff.init(.delete, "cow and the "),
+        Diff.init(.equal, "cat."),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "abcxx"), Diff.init(.insert, "xxdef") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No overlap elimination
+        Diff.init(.delete, "abcxx"),
+        Diff.init(.insert, "xxdef"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "abcxxx"), Diff.init(.insert, "xxxdef") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Overlap elimination
+        Diff.init(.delete, "abc"),
+        Diff.init(.equal, "xxx"),
+        Diff.init(.insert, "def"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "xxxabc"), Diff.init(.insert, "defxxx") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Reverse overlap elimination
+        Diff.init(.insert, "def"),
+        Diff.init(.equal, "xxx"),
+        Diff.init(.delete, "abc"),
+    }), diffs.items);
+
+    diffs.items.len = 0;
+    try diffs.appendSlice(talloc, &.{ Diff.init(.delete, "abcd1212"), Diff.init(.insert, "1212efghi"), Diff.init(.equal, "----"), Diff.init(.delete, "A3"), Diff.init(.insert, "3BC") });
+    try diffCleanupSemantic(talloc, &diffs);
+    try std.testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Two overlap eliminations
+        Diff.init(.delete, "abcd"),
+        Diff.init(.equal, "1212"),
+        Diff.init(.insert, "efghi"),
+        Diff.init(.equal, "----"),
+        Diff.init(.delete, "A"),
+        Diff.init(.equal, "3"),
+        Diff.init(.insert, "BC"),
+    }), diffs.items);
+}
