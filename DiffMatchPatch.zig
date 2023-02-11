@@ -654,8 +654,8 @@ fn diffLinesToChars(
     try line_array.append(allocator, "");
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
-    var chars1 = try diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, 40000);
-    var chars2 = try diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, 65535);
+    var chars1 = try diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, 170);
+    var chars2 = try diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, 255);
     return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
 
@@ -691,7 +691,7 @@ fn diffLinesToCharsMunge(
             try chars.append(allocator, @intCast(u8, value));
         } else {
             if (line_array.items.len == max_lines) {
-                // Bail out at 65535 because char 65536 == char 0.
+                // Bail out at 255 because char 256 == char 0.
                 line = text[@intCast(usize, line_start)..];
                 line_end = @intCast(isize, text.len);
             }
