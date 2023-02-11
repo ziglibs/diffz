@@ -37,8 +37,8 @@ pub const Diff = struct {
     }
 };
 
-/// Number of microseconds to map a diff before giving up (0 for infinity).
-diff_timeout: u64 = 1 * std.time.us_per_s,
+/// Number of milliseconds to map a diff before giving up (0 for infinity).
+diff_timeout: u64 = 1000,
 /// Cost of an empty edit operation in terms of edit characters.
 diff_edit_cost: u16 = 4,
 
@@ -83,7 +83,7 @@ pub fn diff(
     const deadline = if (dmp.diff_timeout == 0)
         std.math.maxInt(u64)
     else
-        @intCast(u64, std.time.microTimestamp()) + dmp.diff_timeout;
+        @intCast(u64, std.time.milliTimestamp()) + dmp.diff_timeout;
     return dmp.diffInternal(allocator, before, after, check_lines, deadline);
 }
 
@@ -99,7 +99,7 @@ fn diffInternal(
     var diffs = DiffList{};
     if (std.mem.eql(u8, before, after)) {
         if (before.len != 0) {
-            try diffs.append(allocator, Diff.init(.equal, before));
+            try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, before)));
         }
         return diffs;
     }
@@ -121,10 +121,10 @@ fn diffInternal(
 
     // Restore the prefix and suffix.
     if (common_prefix.len != 0) {
-        try diffs.insert(allocator, 0, Diff.init(.equal, common_prefix));
+        try diffs.insert(allocator, 0, Diff.init(.equal, try allocator.dupe(u8, common_prefix)));
     }
     if (common_suffix.len != 0) {
-        try diffs.append(allocator, Diff.init(.equal, common_suffix));
+        try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, common_suffix)));
     }
 
     try diffCleanupMerge(allocator, &diffs);
@@ -178,13 +178,13 @@ fn diffCompute(
 
     if (before.len == 0) {
         // Just add some text (speedup).
-        try diffs.append(allocator, Diff.init(.insert, after));
+        try diffs.append(allocator, Diff.init(.insert, try allocator.dupe(u8, after)));
         return diffs;
     }
 
     if (after.len == 0) {
         // Just delete some text (speedup).
-        try diffs.append(allocator, Diff.init(.delete, before));
+        try diffs.append(allocator, Diff.init(.delete, try allocator.dupe(u8, before)));
         return diffs;
     }
 
@@ -197,9 +197,9 @@ fn diffCompute(
             .delete
         else
             .insert;
-        try diffs.append(allocator, Diff.init(op, long_text[0..index]));
-        try diffs.append(allocator, Diff.init(.equal, short_text));
-        try diffs.append(allocator, Diff.init(op, long_text[index + short_text.len ..]));
+        try diffs.append(allocator, Diff.init(op, try allocator.dupe(u8, long_text[0..index])));
+        try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, short_text)));
+        try diffs.append(allocator, Diff.init(op, try allocator.dupe(u8, long_text[index + short_text.len ..])));
         return diffs;
     }
 
@@ -418,7 +418,7 @@ fn diffBisect(
     var d: isize = 0;
     while (d < max_d) : (d += 1) {
         // Bail out if deadline is reached.
-        if (@intCast(u64, std.time.microTimestamp()) > deadline) {
+        if (@intCast(u64, std.time.milliTimestamp()) > deadline) {
             break;
         }
 
@@ -506,8 +506,8 @@ fn diffBisect(
     // Diff took too long and hit the deadline or
     // number of diffs equals number of characters, no commonality at all.
     var diffs = DiffList{};
-    try diffs.append(allocator, Diff.init(.delete, before));
-    try diffs.append(allocator, Diff.init(.insert, after));
+    try diffs.append(allocator, Diff.init(.delete, try allocator.dupe(u8, before)));
+    try diffs.append(allocator, Diff.init(.insert, try allocator.dupe(u8, after)));
     return diffs;
 }
 
@@ -957,7 +957,7 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 try diffs.insert(
                     allocator,
                     @intCast(usize, equalities.items[equalities.items.len - 1]),
-                    Diff.init(.delete, last_equality.?),
+                    Diff.init(.delete, try allocator.dupe(u8, last_equality.?)),
                 );
                 // Change second copy to insert.
                 diffs.items[@intCast(usize, equalities.items[equalities.items.len - 1] + 1)].operation = .insert;
@@ -2001,20 +2001,20 @@ test diff {
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.insert, " "), Diff.init(.equal, "a"), Diff.init(.insert, "nd"), Diff.init(.equal, " [[Pennsylvania]]"), Diff.init(.delete, " and [[New") });
     try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)).items); // diff: Large equality.
 
-    this.diff_timeout = 100 * std.time.ns_per_ms; // 100ms
+    this.diff_timeout = 100; // 100ms
     // Increase the text lengths by 1024 times to ensure a timeout.
     {
-        const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 10;
-        const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 10;
+        const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
+        const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
         const start_time = std.time.milliTimestamp();
         _ = try this.diff(arena.allocator(), a, b, false); // Travis - TODO not sure what the third arg should be
         const end_time = std.time.milliTimestamp();
         // Test that we took at least the timeout period.
-        try testing.expect((this.diff_timeout * 1000) * 10000 <= end_time - start_time); // diff: Timeout min.
+        try testing.expect(this.diff_timeout <= end_time - start_time); // diff: Timeout min.
         // Test that we didn't take forever (be forgiving).
         // Theoretically this test could fail very occasionally if the
         // OS task swaps or locks up for a second at the wrong moment.
-        try testing.expect((this.diff_timeout * 1000) * 10000 * 2 > end_time - start_time); // diff: Timeout max.
+        try testing.expect((this.diff_timeout) * 10000 * 2 > end_time - start_time); // diff: Timeout max.
         this.diff_timeout = 0;
     }
     {
