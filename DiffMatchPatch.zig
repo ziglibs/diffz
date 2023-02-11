@@ -21,7 +21,7 @@ pub const Diff = struct {
     pub fn format(value: Diff, _: anytype, _: anytype, writer: anytype) !void {
         try writer.print("({s}, \"{s}\")", .{
             switch (value.operation) {
-                .equal => "",
+                .equal => "=",
                 .insert => "+",
                 .delete => "-",
             },
@@ -108,13 +108,13 @@ fn diffInternal(
     var trimmed_after = after[common_length..];
 
     // Trim off common suffix (speedup).
-    common_length = diffCommonSuffix(before, after);
-    var common_suffix = before[before.len - common_length ..];
+    common_length = diffCommonSuffix(trimmed_before, trimmed_after);
+    var common_suffix = trimmed_before[trimmed_before.len - common_length ..];
     trimmed_before = trimmed_before[0 .. trimmed_before.len - common_length];
     trimmed_after = trimmed_after[0 .. trimmed_after.len - common_length];
 
     // Compute the diff on the middle block.
-    diffs = try dmp.diffCompute(allocator, before, after, check_lines, deadline);
+    diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, deadline);
 
     // Restore the prefix and suffix.
     if (common_prefix.len != 0) {
@@ -228,8 +228,10 @@ fn diffCompute(
             deadline,
         );
         defer diffs_b.deinit(allocator);
+
         var tmp_diffs = diffs;
         defer tmp_diffs.deinit(allocator);
+
         // Merge the results.
         diffs = diffs_a;
         try diffs.append(allocator, Diff.init(.equal, half_match.common_middle));
@@ -402,7 +404,7 @@ fn diffBisect(
     const delta = before_length - after_length;
     // If the total number of characters is odd, then the front path will
     // collide with the reverse path.
-    const front = delta & 1 == 1;
+    const front = (@mod(delta, 2) != 0);
     // Offsets for start and end of k loop.
     // Prevents mapping of space beyond the grid.
     var k1start: isize = 0;
@@ -422,8 +424,8 @@ fn diffBisect(
         while (k1 <= d - k1end) : (k1 += 2) {
             var k1_offset = v_offset + k1;
             var x1: isize = 0;
-            if (k1 == -d or k1 != d and
-                v1.items[@intCast(usize, k1_offset - 1)] < v1.items[@intCast(usize, k1_offset + 1)])
+            if (k1 == -d or (k1 != d and
+                v1.items[@intCast(usize, k1_offset - 1)] < v1.items[@intCast(usize, k1_offset + 1)]))
             {
                 x1 = v1.items[@intCast(usize, k1_offset + 1)];
             } else {
@@ -461,8 +463,8 @@ fn diffBisect(
         while (k2 <= d - k2end) : (k2 += 2) {
             const k2_offset = v_offset + k2;
             var x2: isize = 0;
-            if (k2 == -d or k2 != d and
-                v2.items[@intCast(usize, k2_offset - 1)] < v2.items[@intCast(usize, k2_offset + 1)])
+            if (k2 == -d or (k2 != d and
+                v2.items[@intCast(usize, k2_offset - 1)] < v2.items[@intCast(usize, k2_offset + 1)]))
             {
                 x2 = v2.items[@intCast(usize, k2_offset + 1)];
             } else {
