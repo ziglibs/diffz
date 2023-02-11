@@ -80,7 +80,10 @@ pub fn diff(
     /// a faster slightly less optimal diff.
     check_lines: bool,
 ) DiffError!DiffList {
-    const deadline = @intCast(u64, std.time.microTimestamp()) + dmp.diff_timeout;
+    const deadline = if (dmp.diff_timeout == 0)
+        std.math.maxInt(u64)
+    else
+        @intCast(u64, std.time.microTimestamp()) + dmp.diff_timeout;
     return dmp.diffInternal(allocator, before, after, check_lines, deadline);
 }
 
@@ -1945,60 +1948,60 @@ test diff {
     var diffs = DiffList{};
     defer diffs.deinit(arena.allocator());
     var this = DiffMatchPatch{};
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "", "", false)); // diff: Null case.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "", "", false)).items); // diff: Null case.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{Diff.init(.equal, "abc")});
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "abc", "abc", false)); // diff: Equality.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "abc", false)).items); // diff: Equality.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "ab"), Diff.init(.insert, "123"), Diff.init(.equal, "c") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "abc", "ab123c", false)); // diff: Simple insertion.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "ab123c", false)).items); // diff: Simple insertion.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "a"), Diff.init(.delete, "123"), Diff.init(.equal, "bc") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "a123bc", "abc", false)); // diff: Simple deletion.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a123bc", "abc", false)).items); // diff: Simple deletion.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "a"), Diff.init(.insert, "123"), Diff.init(.equal, "b"), Diff.init(.insert, "456"), Diff.init(.equal, "c") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "abc", "a123b456c", false)); // diff: Two insertions.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "a123b456c", false)).items); // diff: Two insertions.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "a"), Diff.init(.delete, "123"), Diff.init(.equal, "b"), Diff.init(.delete, "456"), Diff.init(.equal, "c") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "a123b456c", "abc", false)); // diff: Two deletions.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a123b456c", "abc", false)).items); // diff: Two deletions.
 
     // Perform a real diff.
     // Switch off the timeout.
     this.diff_timeout = 0;
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "a"), Diff.init(.insert, "b") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "a", "b", false)); // diff: Simple case #1.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a", "b", false)).items); // diff: Simple case #1.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "Apple"), Diff.init(.insert, "Banana"), Diff.init(.equal, "s are a"), Diff.init(.insert, "lso"), Diff.init(.equal, " fruit.") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "Apples are a fruit.", "Bananas are also fruit.", false)); // diff: Simple case #2.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "Apples are a fruit.", "Bananas are also fruit.", false)).items); // diff: Simple case #2.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "a"), Diff.init(.insert, "\u{0680}"), Diff.init(.equal, "x"), Diff.init(.delete, "\t"), Diff.init(.insert, "\x00") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "ax\t", "\u{0680}x\x00", false)); // diff: Simple case #3.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "ax\t", "\u{0680}x\x00", false)).items); // diff: Simple case #3.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "1"), Diff.init(.equal, "a"), Diff.init(.delete, "y"), Diff.init(.equal, "b"), Diff.init(.delete, "2"), Diff.init(.insert, "xab") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "1ayb2", "abxab", false)); // diff: Overlap #1.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "1ayb2", "abxab", false)).items); // diff: Overlap #1.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.insert, "xaxcx"), Diff.init(.equal, "abc"), Diff.init(.delete, "y") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "abcy", "xaxcxabc", false)); // diff: Overlap #2.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abcy", "xaxcxabc", false)).items); // diff: Overlap #2.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "ABCD"), Diff.init(.equal, "a"), Diff.init(.delete, "="), Diff.init(.insert, "-"), Diff.init(.equal, "bcd"), Diff.init(.delete, "="), Diff.init(.insert, "-"), Diff.init(.equal, "efghijklmnopqrs"), Diff.init(.delete, "EFGHIJKLMNOefg") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false)); // diff: Overlap #3.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false)).items); // diff: Overlap #3.
 
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.insert, " "), Diff.init(.equal, "a"), Diff.init(.insert, "nd"), Diff.init(.equal, " [[Pennsylvania]]"), Diff.init(.delete, " and [[New") });
-    try testing.expectEqualDeep(diffs, try this.diff(arena.allocator(), "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)); // diff: Large equality.
+    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)).items); // diff: Large equality.
 
-    this.diff_timeout = 100 * std.time.ms_per_s; // 100ms
+    this.diff_timeout = 100 * std.time.ns_per_ms; // 100ms
     // Increase the text lengths by 1024 times to ensure a timeout.
     {
         const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 10;
