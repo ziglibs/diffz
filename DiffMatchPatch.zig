@@ -1702,56 +1702,93 @@ test diffCleanupMerge {
     try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
         .{ .operation = .equal, .text = "abc" },
     }), diffs2.items); // Merge equalities
+
+    var diffs3 = DiffList{};
+    defer deinitDiffList(alloc, &diffs3);
+
+    try diffs3.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "a"),
+        },
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "b"),
+        },
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "c"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs3);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .delete, .text = "abc" },
+    }), diffs3.items); // Merge deletions
+
+    var diffs4 = DiffList{};
+    defer deinitDiffList(alloc, &diffs4);
+    try diffs4.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "a"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "b"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "c"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs4);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .insert, .text = "abc" },
+    }), diffs4.items); // Merge insertions
+
+    if (false) {
+        var diffs5 = DiffList{};
+        defer deinitDiffList(alloc, &diffs5);
+        try diffs5.appendSlice(alloc, &[_]Diff{
+            .{
+                .operation = .delete,
+                .text = try alloc.dupe(u8, "a"),
+            },
+            .{
+                .operation = .insert,
+                .text = try alloc.dupe(u8, "b"),
+            },
+            .{
+                .operation = .delete,
+                .text = try alloc.dupe(u8, "c"),
+            },
+            .{
+                .operation = .insert,
+                .text = try alloc.dupe(u8, "d"),
+            },
+            .{
+                .operation = .equal,
+                .text = try alloc.dupe(u8, "e"),
+            },
+            .{
+                .operation = .equal,
+                .text = try alloc.dupe(u8, "f"),
+            },
+        });
+        try diffCleanupMerge(alloc, &diffs5);
+        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+            .{ .operation = .delete, .text = "ac" },
+            .{ .operation = .insert, .text = "bd" },
+            .{ .operation = .equal, .text = "ef" },
+        }), diffs5.items); // Merge interweave
+    }
     //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
-    //        .{ .operation = .delete, .text = "a" },
-    //        .{ .operation = .delete, .text = "b" },
-    //        .{ .operation = .delete, .text = "c" },
-    //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .delete, .text = "abc" },
-    //    }), diffs2.items); // Merge deletions
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
-    //        .{ .operation = .insert, .text = "a" },
-    //        .{ .operation = .insert, .text = "b" },
-    //        .{ .operation = .insert, .text = "c" },
-    //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .insert, .text = "abc" },
-    //    }), diffs2.items); // Merge insertions
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
-    //        .{ .operation = .delete, .text = "a" },
-    //        .{ .operation = .insert, .text = "b" },
-    //        .{ .operation = .delete, .text = "c" },
-    //        .{ .operation = .insert, .text = "d" },
-    //        .{ .operation = .equal, .text = "e" },
-    //        .{ .operation = .equal, .text = "f" },
-    //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .delete, .text = "ac" },
-    //        .{ .operation = .insert, .text = "bd" },
-    //        .{ .operation = .equal, .text = "ef" },
-    //    }), diffs2.items); // Merge interweave
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        .{ .operation = .delete, .text = "a" },
     //        .{ .operation = .insert, .text = "abc" },
     //        .{ .operation = .delete, .text = "dc" },
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        .{ .operation = .equal, .text = "a" },
     //        .{ .operation = .delete, .text = "d" },
@@ -1761,14 +1798,14 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        .{ .operation = .equal, .text = "x" },
     //        .{ .operation = .delete, .text = "a" },
     //        .{ .operation = .insert, .text = "abc" },
     //        .{ .operation = .delete, .text = "dc" },
     //        .{ .operation = .equal, .text = "y" },
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        .{ .operation = .equal, .text = "xa" },
     //        .{ .operation = .delete, .text = "d" },
@@ -1778,12 +1815,12 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        .{ .operation = .equal, .text = "a" },
     //        .{ .operation = .insert, .text = "ba" },
     //        .{ .operation = .equal, .text = "c" },
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        .{ .operation = .insert, .text = "ab" },
     //        .{ .operation = .equal, .text = "ac" },
@@ -1791,12 +1828,12 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        .{ .operation = .equal, .text = "c" },
     //        .{ .operation = .insert, .text = "ab" },
     //        .{ .operation = .equal, .text = "a" },
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        .{ .operation = .equal, .text = "ca" },
     //        .{ .operation = .insert, .text = "ba" },
@@ -1804,14 +1841,14 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        Diff.init(.equal, "a"),
     //        Diff.init(.delete, "b"),
     //        Diff.init(.equal, "c"),
     //        Diff.init(.delete, "ac"),
     //        Diff.init(.equal, "x"),
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        Diff.init(.delete, "abc"),
     //        Diff.init(.equal, "acx"),
@@ -1819,14 +1856,14 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        Diff.init(.equal, "x"),
     //        Diff.init(.delete, "ca"),
     //        Diff.init(.equal, "c"),
     //        Diff.init(.delete, "b"),
     //        Diff.init(.equal, "a"),
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        Diff.init(.equal, "xca"),
     //        Diff.init(.delete, "cba"),
@@ -1834,12 +1871,12 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        Diff.init(.delete, "b"),
     //        Diff.init(.insert, "ab"),
     //        Diff.init(.equal, "c"),
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        Diff.init(.insert, "a"),
     //        Diff.init(.equal, "bc"),
@@ -1847,12 +1884,12 @@ test diffCleanupMerge {
     //
     //    diffs2.items.len = 0;
     //
-    //    try diffs2.appendSlice(arena.allocator(), &[_]Diff{
+    //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        Diff.init(.equal, ""),
     //        Diff.init(.insert, "a"),
     //        Diff.init(.equal, "b"),
     //    });
-    //    try diffCleanupMerge(arena.allocator(), &diffs);
+    //    try diffCleanupMerge(alloc, &diffs2);
     //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
     //        Diff.init(.insert, "a"),
     //        Diff.init(.equal, "b"),
