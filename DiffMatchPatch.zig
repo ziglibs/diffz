@@ -1176,23 +1176,21 @@ pub fn diffCleanupSemanticLossless(
             if (!std.mem.eql(u8, diffs.items[pointer - 1].text, best_equality_1.items)) {
                 // We have an improvement, save it back to the diff.
                 if (best_equality_1.items.len != 0) {
-                    // allocator.free(diffs.items[pointer - 1].text);
+                    allocator.free(diffs.items[pointer - 1].text);
                     diffs.items[pointer - 1].text = try allocator.dupe(u8, best_equality_1.items);
                 } else {
                     const old_diff = diffs.orderedRemove(pointer - 1);
-                    // allocator.free(old_diff.text);
-                    _ = old_diff;
+                    allocator.free(old_diff.text);
                     pointer -= 1;
                 }
-                // allocator.free(diffs.items[pointer].text);
+                allocator.free(diffs.items[pointer].text);
                 diffs.items[pointer].text = try allocator.dupe(u8, best_edit.items);
                 if (best_equality_2.items.len != 0) {
-                    // allocator.free(diffs.items[pointer - 1].text);
+                    allocator.free(diffs.items[pointer + 1].text);
                     diffs.items[pointer + 1].text = try allocator.dupe(u8, best_equality_2.items);
                 } else {
                     const old_diff = diffs.orderedRemove(pointer + 1);
-                    // allocator.free(old_diff.text);
-                    _ = old_diff;
+                    allocator.free(old_diff.text);
                     pointer -= 1;
                 }
             }
@@ -1987,36 +1985,35 @@ test diffCleanupMerge {
 }
 
 test diffCleanupSemanticLossless {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const alloc = std.testing.allocator;
+    var diffs = DiffList{};
+    try diffCleanupSemanticLossless(alloc, &diffs);
+    try testing.expectEqualDeep(@as([]const Diff, &[0]Diff{}), diffs.items); // Null case
+
+    var diffs2 = DiffList{};
+    defer deinitDiffList(alloc, &diffs2);
+    try diffs2.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "AAA\r\n\r\nBBB")),
+        Diff.init(.insert, try alloc.dupe(u8, "\r\nDDD\r\n\r\nBBB")),
+        Diff.init(.equal, try alloc.dupe(u8, "\r\nEEE")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs2);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "AAA\r\n\r\n"),
+        Diff.init(.insert, "BBB\r\nDDD\r\n\r\n"),
+        Diff.init(.equal, "BBB\r\nEEE"),
+    }), diffs2.items);
+
     if (false) {
-        var arena = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-
-        var diffs = DiffList{};
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[0]Diff{}), diffs.items); // Null case
-
-        diffs.items.len = 0;
-
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.equal, "AAA\r\n\r\nBBB"),
-            Diff.init(.insert, "\r\nDDD\r\n\r\nBBB"),
-            Diff.init(.equal, "\r\nEEE"),
-        });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "AAA\r\n\r\n"),
-            Diff.init(.insert, "BBB\r\nDDD\r\n\r\n"),
-            Diff.init(.equal, "BBB\r\nEEE"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.equal, "AAA\r\nBBB"),
             Diff.init(.insert, " DDD\r\nBBB"),
             Diff.init(.equal, " EEE"),
         });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+        try diffCleanupSemanticLossless(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
             Diff.init(.equal, "AAA\r\n"),
             Diff.init(.insert, "BBB DDD\r\n"),
@@ -2025,12 +2022,12 @@ test diffCleanupSemanticLossless {
 
         diffs.items.len = 0;
 
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.equal, "The c"),
             Diff.init(.insert, "ow and the c"),
             Diff.init(.equal, "at."),
         });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+        try diffCleanupSemanticLossless(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
             Diff.init(.equal, "The "),
             Diff.init(.insert, "cow and the "),
@@ -2039,12 +2036,12 @@ test diffCleanupSemanticLossless {
 
         diffs.items.len = 0;
 
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.equal, "The-c"),
             Diff.init(.insert, "ow-and-the-c"),
             Diff.init(.equal, "at."),
         });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+        try diffCleanupSemanticLossless(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
             Diff.init(.equal, "The-"),
             Diff.init(.insert, "cow-and-the-"),
@@ -2053,12 +2050,12 @@ test diffCleanupSemanticLossless {
 
         diffs.items.len = 0;
 
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.equal, "a"),
             Diff.init(.delete, "a"),
             Diff.init(.equal, "ax"),
         });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+        try diffCleanupSemanticLossless(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
             Diff.init(.delete, "a"),
             Diff.init(.equal, "aax"),
@@ -2066,12 +2063,12 @@ test diffCleanupSemanticLossless {
 
         diffs.items.len = 0;
 
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.equal, "xa"),
             Diff.init(.delete, "a"),
             Diff.init(.equal, "a"),
         });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+        try diffCleanupSemanticLossless(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
             Diff.init(.equal, "xaa"),
             Diff.init(.delete, "a"),
@@ -2079,12 +2076,12 @@ test diffCleanupSemanticLossless {
 
         diffs.items.len = 0;
 
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.equal, "The xxx. The "),
             Diff.init(.insert, "zzz. The "),
             Diff.init(.equal, "yyy."),
         });
-        try diffCleanupSemanticLossless(arena.allocator(), &diffs);
+        try diffCleanupSemanticLossless(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
             Diff.init(.equal, "The xxx."),
             Diff.init(.insert, " The zzz."),
