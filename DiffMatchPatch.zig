@@ -776,6 +776,7 @@ fn diffCharsToLines(
         while (j < d.text.len) : (j += 1) {
             try text.appendSlice(allocator, line_array[d.text[j]]);
         }
+        allocator.free(d.text);
         d.text = try allocator.dupe(u8, text.items);
     }
 }
@@ -1575,14 +1576,14 @@ test diffLinesToChars {
     try tmp_array_list.append("");
     try tmp_array_list.append("a");
     try tmp_array_list.append("b");
-
     result.deinit(allocator);
+
     result = try diffLinesToChars(allocator, "a", "b");
     try testing.expectEqualStrings("\u{0001}", result.chars_1); // No linebreaks #1.
     try testing.expectEqualStrings("\u{0002}", result.chars_2); // No linebreaks #2.
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
-
     result.deinit(allocator);
+
     // TODO: More than 256 to reveal any 8-bit limitations but this requires
     // some unicode logic that I don't want to deal with
 
@@ -1612,23 +1613,33 @@ test diffLinesToChars {
 test diffCharsToLines {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-
-    try testing.expect((Diff.init(.equal, "a")).eql(Diff.init(.equal, "a")));
-    try testing.expect(!(Diff.init(.insert, "a")).eql(Diff.init(.equal, "a")));
-    try testing.expect(!(Diff.init(.equal, "a")).eql(Diff.init(.equal, "b")));
-    try testing.expect(!(Diff.init(.equal, "a")).eql(Diff.init(.delete, "b")));
+    const alloc = std.testing.allocator;
+    const equal_a = Diff.init(.equal, try alloc.dupe(u8, "a"));
+    defer alloc.free(equal_a.text);
+    const insert_a = Diff.init(.insert, try alloc.dupe(u8, "a"));
+    defer alloc.free(insert_a.text);
+    const equal_b = Diff.init(.equal, try alloc.dupe(u8, "b"));
+    defer alloc.free(equal_b.text);
+    const delete_b = Diff.init(.delete, try alloc.dupe(u8, "b"));
+    defer alloc.free(delete_b.text);
+    try testing.expect(equal_a.eql(equal_a));
+    try testing.expect(!insert_a.eql(equal_a));
+    try testing.expect(!equal_a.eql(equal_b));
+    try testing.expect(!equal_a.eql(delete_b));
 
     // Convert chars up to lines.
-    var diffs = std.ArrayList(Diff).init(arena.allocator());
-    try diffs.appendSlice(&.{
-        Diff{ .operation = .equal, .text = try arena.allocator().dupe(u8, "\u{0001}\u{0002}\u{0001}") },
-        Diff{ .operation = .insert, .text = try arena.allocator().dupe(u8, "\u{0002}\u{0001}\u{0002}") },
+    var diffs = DiffList{};
+    defer deinitDiffList(alloc, &diffs);
+    try diffs.appendSlice(alloc, &.{
+        Diff{ .operation = .equal, .text = try alloc.dupe(u8, "\u{0001}\u{0002}\u{0001}") },
+        Diff{ .operation = .insert, .text = try alloc.dupe(u8, "\u{0002}\u{0001}\u{0002}") },
     });
-    var tmp_vector = std.ArrayList([]const u8).init(arena.allocator());
+    var tmp_vector = std.ArrayList([]const u8).init(alloc);
+    defer tmp_vector.deinit();
     try tmp_vector.append("");
     try tmp_vector.append("alpha\n");
     try tmp_vector.append("beta\n");
-    try diffCharsToLines(arena.allocator(), diffs.items, tmp_vector.items);
+    try diffCharsToLines(alloc, diffs.items, tmp_vector.items);
 
     try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
         Diff.init(.equal, "alpha\nbeta\nalpha\n"),
