@@ -858,17 +858,17 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     }
 
                     if (text_delete.items.len != 0) {
-                        allocator.free(diffs.items[pointer].text);
-                        try diffs.replaceRange(allocator, pointer, 0, &.{
-                            Diff.init(.delete, try allocator.dupe(u8, text_delete.items)),
-                        });
+                        try diffs.insert(allocator, pointer, Diff.init(
+                            .delete,
+                            try allocator.dupe(u8, text_delete.items),
+                        ));
                         pointer += 1;
                     }
                     if (text_insert.items.len != 0) {
-                        allocator.free(diffs.items[pointer].text);
-                        try diffs.replaceRange(allocator, pointer, 0, &.{
-                            Diff.init(.insert, try allocator.dupe(u8, text_insert.items)),
-                        });
+                        try diffs.insert(allocator, pointer, Diff.init(
+                            .insert,
+                            try allocator.dupe(u8, text_insert.items),
+                        ));
                         pointer += 1;
                     }
                     pointer += 1;
@@ -934,7 +934,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                 });
                 diffs.items[pointer - 1].text = pm1t;
                 diffs.items[pointer].text = pt;
-                freeRangeDiffList(allocator, diffs, pointer - 1, 1);
+                freeRangeDiffList(allocator, diffs, pointer + 1, 1);
                 try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
                 changes = true;
             }
@@ -1746,42 +1746,40 @@ test diffCleanupMerge {
         .{ .operation = .insert, .text = "abc" },
     }), diffs4.items); // Merge insertions
 
-    if (false) {
-        var diffs5 = DiffList{};
-        defer deinitDiffList(alloc, &diffs5);
-        try diffs5.appendSlice(alloc, &[_]Diff{
-            .{
-                .operation = .delete,
-                .text = try alloc.dupe(u8, "a"),
-            },
-            .{
-                .operation = .insert,
-                .text = try alloc.dupe(u8, "b"),
-            },
-            .{
-                .operation = .delete,
-                .text = try alloc.dupe(u8, "c"),
-            },
-            .{
-                .operation = .insert,
-                .text = try alloc.dupe(u8, "d"),
-            },
-            .{
-                .operation = .equal,
-                .text = try alloc.dupe(u8, "e"),
-            },
-            .{
-                .operation = .equal,
-                .text = try alloc.dupe(u8, "f"),
-            },
-        });
-        try diffCleanupMerge(alloc, &diffs5);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-            .{ .operation = .delete, .text = "ac" },
-            .{ .operation = .insert, .text = "bd" },
-            .{ .operation = .equal, .text = "ef" },
-        }), diffs5.items); // Merge interweave
-    }
+    var diffs5 = DiffList{};
+    defer deinitDiffList(alloc, &diffs5);
+    try diffs5.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "a"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "b"),
+        },
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "c"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "d"),
+        },
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "e"),
+        },
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "f"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs5);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .delete, .text = "ac" },
+        .{ .operation = .insert, .text = "bd" },
+        .{ .operation = .equal, .text = "ef" },
+    }), diffs5.items); // Merge interweave
     //
     //    try diffs2.appendSlice(alloc, &[_]Diff{
     //        .{ .operation = .delete, .text = "a" },
