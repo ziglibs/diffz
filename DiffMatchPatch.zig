@@ -413,8 +413,10 @@ fn diffBisect(
     const v_length = 2 * max_d;
 
     var v1 = try ArrayListUnmanaged(isize).initCapacity(allocator, @as(usize, @intCast(v_length)));
+    defer v1.deinit(allocator);
     v1.items.len = @intCast(v_length);
     var v2 = try ArrayListUnmanaged(isize).initCapacity(allocator, @as(usize, @intCast(v_length)));
+    defer v2.deinit(allocator);
     v2.items.len = @intCast(v_length);
 
     var x: usize = 0;
@@ -650,6 +652,12 @@ const LinesToCharsResult = struct {
     chars_1: []const u8,
     chars_2: []const u8,
     line_array: ArrayListUnmanaged([]const u8),
+
+    pub fn deinit(self: *LinesToCharsResult, allocator: Allocator) void {
+        allocator.free(self.chars_1);
+        allocator.free(self.chars_2);
+        self.line_array.deinit(allocator);
+    }
 };
 
 /// Split two texts into a list of strings.  Reduce the texts to a string of
@@ -665,12 +673,15 @@ fn diffLinesToChars(
     text2: []const u8,
 ) DiffError!LinesToCharsResult {
     var line_array = ArrayListUnmanaged([]const u8){};
+    errdefer line_array.deinit(allocator);
     var line_hash = std.StringHashMapUnmanaged(usize){};
+    defer line_hash.deinit(allocator);
     // e.g. line_array[4] == "Hello\n"
     // e.g. line_hash.get("Hello\n") == 4
 
     // "\x00" is a valid character, but various debuggers don't like it.
     // So we'll insert a junk entry to avoid generating a null character.
+    // XXX why is this necessary? -Sam
     try line_array.append(allocator, "");
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
@@ -697,9 +708,9 @@ fn diffLinesToCharsMunge(
     var line_end: isize = -1;
     var line: []const u8 = "";
     var chars = ArrayListUnmanaged(u8){};
+    defer chars.deinit(allocator);
     // Walk the text, pulling out a Substring for each line.
-    // text.split('\n') would would temporarily double our memory footprint.
-    // Modifying text would create many large strings to garbage collect.
+    // TODO this can be handled with a Reader, avoiding all the manual splitting
     while (line_end < @as(isize, @intCast(text.len)) - 1) {
         line_end = b: {
             break :b @as(isize, @intCast(std.mem.indexOf(u8, text[@intCast(line_start)..], "\n") orelse
@@ -1535,16 +1546,15 @@ test diffHalfMatch {
 }
 
 test diffLinesToChars {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
+    const allocator = std.testing.allocator;
     // Convert lines down to characters.
-    var tmp_array_list = std.ArrayList([]const u8).init(arena.allocator());
+    var tmp_array_list = std.ArrayList([]const u8).init(allocator);
+    defer tmp_array_list.deinit();
     try tmp_array_list.append("");
     try tmp_array_list.append("alpha\n");
     try tmp_array_list.append("beta\n");
 
-    var result = try diffLinesToChars(arena.allocator(), "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
+    var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
     try testing.expectEqualStrings("\u{0001}\u{0002}\u{0001}", result.chars_1); // Shared lines #1
     try testing.expectEqualStrings("\u{0002}\u{0001}\u{0002}", result.chars_2); // Shared lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
@@ -1554,8 +1564,9 @@ test diffLinesToChars {
     try tmp_array_list.append("alpha\r\n");
     try tmp_array_list.append("beta\r\n");
     try tmp_array_list.append("\r\n");
+    result.deinit(allocator);
 
-    result = try diffLinesToChars(arena.allocator(), "", "alpha\r\nbeta\r\n\r\n\r\n");
+    result = try diffLinesToChars(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
     try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
     try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
@@ -1565,11 +1576,13 @@ test diffLinesToChars {
     try tmp_array_list.append("a");
     try tmp_array_list.append("b");
 
-    result = try diffLinesToChars(arena.allocator(), "a", "b");
+    result.deinit(allocator);
+    result = try diffLinesToChars(allocator, "a", "b");
     try testing.expectEqualStrings("\u{0001}", result.chars_1); // No linebreaks #1.
     try testing.expectEqualStrings("\u{0002}", result.chars_2); // No linebreaks #2.
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
 
+    result.deinit(allocator);
     // TODO: More than 256 to reveal any 8-bit limitations but this requires
     // some unicode logic that I don't want to deal with
 
@@ -1578,8 +1591,8 @@ test diffLinesToChars {
     // const n: u8 = 255;
     // tmp_array_list.items.len = 0;
 
-    // var line_list = std.ArrayList(u8).init(arena.allocator());
-    // var char_list = std.ArrayList(u8).init(arena.allocator());
+    // var line_list = std.ArrayList(u8).init(alloc);
+    // var char_list = std.ArrayList(u8).init(alloc);
 
     // var i: u8 = 0;
     // while (i < n) : (i += 1) {
@@ -1590,7 +1603,7 @@ test diffLinesToChars {
     // try testing.expectEqual(@as(usize, n), tmp_array_list.items.len); // Test initialization fail #1
     // try testing.expectEqual(@as(usize, n), char_list.items.len); // Test initialization fail #2
     // try tmp_array_list.insert(0, "");
-    // result = try diffLinesToChars(arena.allocator(), line_list.items, "");
+    // result = try diffLinesToChars(alloc, line_list.items, "");
     // try testing.expectEqualStrings(char_list.items, result.chars_1);
     // try testing.expectEqualStrings("", result.chars_2);
     // try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items);
