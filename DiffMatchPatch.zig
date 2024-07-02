@@ -2007,87 +2007,87 @@ test diffCleanupSemanticLossless {
         Diff.init(.equal, "BBB\r\nEEE"),
     }), diffs2.items);
 
-    if (false) {
-        try diffs.appendSlice(alloc, &.{
-            Diff.init(.equal, "AAA\r\nBBB"),
-            Diff.init(.insert, " DDD\r\nBBB"),
-            Diff.init(.equal, " EEE"),
-        });
-        try diffCleanupSemanticLossless(alloc, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "AAA\r\n"),
-            Diff.init(.insert, "BBB DDD\r\n"),
-            Diff.init(.equal, "BBB EEE"),
-        }), diffs.items);
+    var diffs3 = DiffList{};
+    defer deinitDiffList(alloc, &diffs3);
+    try diffs3.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "AAA\r\nBBB")),
+        Diff.init(.insert, try alloc.dupe(u8, " DDD\r\nBBB")),
+        Diff.init(.equal, try alloc.dupe(u8, " EEE")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs3);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "AAA\r\n"),
+        Diff.init(.insert, "BBB DDD\r\n"),
+        Diff.init(.equal, "BBB EEE"),
+    }), diffs3.items);
 
-        diffs.items.len = 0;
+    var diffs4 = DiffList{};
+    defer deinitDiffList(alloc, &diffs4);
+    try diffs4.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "The c")),
+        Diff.init(.insert, try alloc.dupe(u8, "ow and the c")),
+        Diff.init(.equal, try alloc.dupe(u8, "at.")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs4);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "The "),
+        Diff.init(.insert, "cow and the "),
+        Diff.init(.equal, "cat."),
+    }), diffs4.items);
 
-        try diffs.appendSlice(alloc, &.{
-            Diff.init(.equal, "The c"),
-            Diff.init(.insert, "ow and the c"),
-            Diff.init(.equal, "at."),
-        });
-        try diffCleanupSemanticLossless(alloc, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "The "),
-            Diff.init(.insert, "cow and the "),
-            Diff.init(.equal, "cat."),
-        }), diffs.items);
+    var diffs5 = DiffList{};
+    defer deinitDiffList(alloc, &diffs5);
+    try diffs5.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "The-c")),
+        Diff.init(.insert, try alloc.dupe(u8, "ow-and-the-c")),
+        Diff.init(.equal, try alloc.dupe(u8, "at.")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs5);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "The-"),
+        Diff.init(.insert, "cow-and-the-"),
+        Diff.init(.equal, "cat."),
+    }), diffs5.items);
 
-        diffs.items.len = 0;
+    var diffs6 = DiffList{};
+    defer deinitDiffList(alloc, &diffs6);
+    try diffs6.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "a")),
+        Diff.init(.delete, try alloc.dupe(u8, "a")),
+        Diff.init(.equal, try alloc.dupe(u8, "ax")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs6);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.delete, "a"),
+        Diff.init(.equal, "aax"),
+    }), diffs6.items);
 
-        try diffs.appendSlice(alloc, &.{
-            Diff.init(.equal, "The-c"),
-            Diff.init(.insert, "ow-and-the-c"),
-            Diff.init(.equal, "at."),
-        });
-        try diffCleanupSemanticLossless(alloc, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "The-"),
-            Diff.init(.insert, "cow-and-the-"),
-            Diff.init(.equal, "cat."),
-        }), diffs.items);
+    var diffs7 = DiffList{};
+    defer deinitDiffList(alloc, &diffs7);
+    try diffs7.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "xa")),
+        Diff.init(.delete, try alloc.dupe(u8, "a")),
+        Diff.init(.equal, try alloc.dupe(u8, "a")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs7);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "xaa"),
+        Diff.init(.delete, "a"),
+    }), diffs7.items);
 
-        diffs.items.len = 0;
-
-        try diffs.appendSlice(alloc, &.{
-            Diff.init(.equal, "a"),
-            Diff.init(.delete, "a"),
-            Diff.init(.equal, "ax"),
-        });
-        try diffCleanupSemanticLossless(alloc, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.delete, "a"),
-            Diff.init(.equal, "aax"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-
-        try diffs.appendSlice(alloc, &.{
-            Diff.init(.equal, "xa"),
-            Diff.init(.delete, "a"),
-            Diff.init(.equal, "a"),
-        });
-        try diffCleanupSemanticLossless(alloc, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "xaa"),
-            Diff.init(.delete, "a"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-
-        try diffs.appendSlice(alloc, &.{
-            Diff.init(.equal, "The xxx. The "),
-            Diff.init(.insert, "zzz. The "),
-            Diff.init(.equal, "yyy."),
-        });
-        try diffCleanupSemanticLossless(alloc, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "The xxx."),
-            Diff.init(.insert, " The zzz."),
-            Diff.init(.equal, " The yyy."),
-        }), diffs.items);
-    }
+    var diffs8 = DiffList{};
+    defer deinitDiffList(alloc, &diffs8);
+    try diffs8.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "The xxx. The ")),
+        Diff.init(.insert, try alloc.dupe(u8, "zzz. The ")),
+        Diff.init(.equal, try alloc.dupe(u8, "yyy.")),
+    });
+    try diffCleanupSemanticLossless(alloc, &diffs8);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "The xxx."),
+        Diff.init(.insert, " The zzz."),
+        Diff.init(.equal, " The yyy."),
+    }), diffs8.items);
 }
 
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
