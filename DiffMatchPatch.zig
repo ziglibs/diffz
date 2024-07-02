@@ -119,8 +119,8 @@ fn diffInternal(
     deadline: u64,
 ) DiffError!DiffList {
     // Check for equality (speedup).
-    var diffs = DiffList{};
     if (std.mem.eql(u8, before, after)) {
+        var diffs = DiffList{};
         if (before.len != 0) {
             try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, before)));
         }
@@ -140,7 +140,7 @@ fn diffInternal(
     trimmed_after = trimmed_after[0 .. trimmed_after.len - common_length];
 
     // Compute the diff on the middle block.
-    diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, deadline);
+    var diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, deadline);
 
     // Restore the prefix and suffix.
     if (common_prefix.len != 0) {
@@ -2105,9 +2105,7 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
 }
 
 test diffBisect {
-    var arena = std.heap.ArenaAllocator.init(talloc);
-    defer arena.deinit();
-
+    const allocator = std.testing.allocator;
     // Normal.
     const a = "cat";
     const b = "map";
@@ -2115,26 +2113,36 @@ test diffBisect {
     // the insertion and deletion pairs are swapped.
     // If the order changes, tweak this test as required.
     var diffs = DiffList{};
-    defer diffs.deinit(arena.allocator());
+    defer deinitDiffList(allocator, &diffs);
     var this = default;
-    try diffs.appendSlice(arena.allocator(), &.{
-        Diff.init(.delete, "c"),
-        Diff.init(.insert, "m"),
-        Diff.init(.equal, "a"),
-        Diff.init(.delete, "t"),
-        Diff.init(.insert, "p"),
+    try diffs.appendSlice(allocator, &.{
+        Diff.init(.delete, try allocator.dupe(u8, "c")),
+        Diff.init(.insert, try allocator.dupe(u8, "m")),
+        Diff.init(.equal, try allocator.dupe(u8, "a")),
+        Diff.init(.delete, try allocator.dupe(u8, "t")),
+        Diff.init(.insert, try allocator.dupe(u8, "p")),
     });
     // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
-    try testing.expectEqualDeep(diffs, try this.diffBisect(arena.allocator(), a, b, std.math.maxInt(u64))); // Normal.
+    var diff_bisect = try this.diffBisect(
+        allocator,
+        a,
+        b,
+        std.math.maxInt(u64),
+    );
+    defer deinitDiffList(allocator, &diff_bisect);
+    try testing.expectEqualDeep(diffs, diff_bisect); // Normal.
 
     // Timeout.
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{
-        Diff.init(.delete, "cat"),
-        Diff.init(.insert, "map"),
+    var diffs2 = DiffList{};
+    defer deinitDiffList(allocator, &diffs2);
+    try diffs2.appendSlice(allocator, &.{
+        Diff.init(.delete, try allocator.dupe(u8, "cat")),
+        Diff.init(.insert, try allocator.dupe(u8, "map")),
     });
     // Travis TODO not sure if 0 is correct for  DateTime.MinValue
-    try testing.expectEqualDeep(diffs, try this.diffBisect(arena.allocator(), a, b, 0)); // Timeout.
+    var diff_bisect2 = try this.diffBisect(allocator, a, b, 0);
+    defer deinitDiffList(allocator, &diff_bisect2);
+    try testing.expectEqualDeep(diffs2, diff_bisect2); // Timeout.
 }
 
 const talloc = testing.allocator;
