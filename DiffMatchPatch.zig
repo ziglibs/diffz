@@ -918,6 +918,10 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
+                const old_pt = diffs.items[pointer].text;
+                defer allocator.free(old_pt);
+                const old_pt1t = diffs.items[pointer + 1].text;
+                defer allocator.free(old_pt1t);
                 diffs.items[pointer].text = pt;
                 diffs.items[pointer + 1].text = p1t;
                 freeRangeDiffList(allocator, diffs, pointer - 1, 1);
@@ -932,6 +936,10 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     diffs.items[pointer].text[diffs.items[pointer + 1].text.len..],
                     diffs.items[pointer + 1].text,
                 });
+                const old_ptm1 = diffs.items[pointer - 1].text;
+                defer allocator.free(old_ptm1);
+                const old_pt = diffs.items[pointer].text;
+                defer allocator.free(old_pt);
                 diffs.items[pointer - 1].text = pm1t;
                 diffs.items[pointer].text = pt;
                 freeRangeDiffList(allocator, diffs, pointer + 1, 1);
@@ -1780,49 +1788,85 @@ test diffCleanupMerge {
         .{ .operation = .insert, .text = "bd" },
         .{ .operation = .equal, .text = "ef" },
     }), diffs5.items); // Merge interweave
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        .{ .operation = .delete, .text = "a" },
-    //        .{ .operation = .insert, .text = "abc" },
-    //        .{ .operation = .delete, .text = "dc" },
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .equal, .text = "a" },
-    //        .{ .operation = .delete, .text = "d" },
-    //        .{ .operation = .insert, .text = "b" },
-    //        .{ .operation = .equal, .text = "c" },
-    //    }), diffs2.items); // Prefix and suffix detection
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        .{ .operation = .equal, .text = "x" },
-    //        .{ .operation = .delete, .text = "a" },
-    //        .{ .operation = .insert, .text = "abc" },
-    //        .{ .operation = .delete, .text = "dc" },
-    //        .{ .operation = .equal, .text = "y" },
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .equal, .text = "xa" },
-    //        .{ .operation = .delete, .text = "d" },
-    //        .{ .operation = .insert, .text = "b" },
-    //        .{ .operation = .equal, .text = "cy" },
-    //    }), diffs2.items); // Prefix and suffix detection with equalities
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        .{ .operation = .equal, .text = "a" },
-    //        .{ .operation = .insert, .text = "ba" },
-    //        .{ .operation = .equal, .text = "c" },
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .insert, .text = "ab" },
-    //        .{ .operation = .equal, .text = "ac" },
-    //    }), diffs2.items); // Slide edit left
+
+    var diffs6 = DiffList{};
+    defer deinitDiffList(alloc, &diffs6);
+    try diffs6.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "a"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "abc"),
+        },
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "dc"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs6);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .equal, .text = "a" },
+        .{ .operation = .delete, .text = "d" },
+        .{ .operation = .insert, .text = "b" },
+        .{ .operation = .equal, .text = "c" },
+    }), diffs6.items); // Prefix and suffix detection
+
+    var diffs7 = DiffList{};
+    defer deinitDiffList(alloc, &diffs7);
+
+    try diffs7.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "x"),
+        },
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "a"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "abc"),
+        },
+        .{
+            .operation = .delete,
+            .text = try alloc.dupe(u8, "dc"),
+        },
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "y"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs7);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .equal, .text = "xa" },
+        .{ .operation = .delete, .text = "d" },
+        .{ .operation = .insert, .text = "b" },
+        .{ .operation = .equal, .text = "cy" },
+    }), diffs7.items); // Prefix and suffix detection with equalities
+
+    var diffs8 = DiffList{};
+    defer deinitDiffList(alloc, &diffs8);
+    try diffs8.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "a"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "ba"),
+        },
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "c"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs8);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .insert, .text = "ab" },
+        .{ .operation = .equal, .text = "ac" },
+    }), diffs8.items); // Slide edit left
     //
     //    diffs2.items.len = 0;
     //
