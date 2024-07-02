@@ -1867,75 +1867,123 @@ test diffCleanupMerge {
         .{ .operation = .insert, .text = "ab" },
         .{ .operation = .equal, .text = "ac" },
     }), diffs8.items); // Slide edit left
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        .{ .operation = .equal, .text = "c" },
-    //        .{ .operation = .insert, .text = "ab" },
-    //        .{ .operation = .equal, .text = "a" },
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        .{ .operation = .equal, .text = "ca" },
-    //        .{ .operation = .insert, .text = "ba" },
-    //    }), diffs2.items); // Slide edit right
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        Diff.init(.equal, "a"),
-    //        Diff.init(.delete, "b"),
-    //        Diff.init(.equal, "c"),
-    //        Diff.init(.delete, "ac"),
-    //        Diff.init(.equal, "x"),
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        Diff.init(.delete, "abc"),
-    //        Diff.init(.equal, "acx"),
-    //    }), diffs2.items); // Slide edit left recursive
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        Diff.init(.equal, "x"),
-    //        Diff.init(.delete, "ca"),
-    //        Diff.init(.equal, "c"),
-    //        Diff.init(.delete, "b"),
-    //        Diff.init(.equal, "a"),
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        Diff.init(.equal, "xca"),
-    //        Diff.init(.delete, "cba"),
-    //    }), diffs2.items); // Slide edit right recursive
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        Diff.init(.delete, "b"),
-    //        Diff.init(.insert, "ab"),
-    //        Diff.init(.equal, "c"),
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        Diff.init(.insert, "a"),
-    //        Diff.init(.equal, "bc"),
-    //    }), diffs2.items); // Empty merge
-    //
-    //    diffs2.items.len = 0;
-    //
-    //    try diffs2.appendSlice(alloc, &[_]Diff{
-    //        Diff.init(.equal, ""),
-    //        Diff.init(.insert, "a"),
-    //        Diff.init(.equal, "b"),
-    //    });
-    //    try diffCleanupMerge(alloc, &diffs2);
-    //    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-    //        Diff.init(.insert, "a"),
-    //        Diff.init(.equal, "b"),
-    //    }), diffs2.items); // Empty equality
+
+    var diffs9 = DiffList{};
+    defer deinitDiffList(alloc, &diffs9);
+    try diffs9.appendSlice(alloc, &[_]Diff{
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "c"),
+        },
+        .{
+            .operation = .insert,
+            .text = try alloc.dupe(u8, "ab"),
+        },
+        .{
+            .operation = .equal,
+            .text = try alloc.dupe(u8, "a"),
+        },
+    });
+    try diffCleanupMerge(alloc, &diffs9);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        .{ .operation = .equal, .text = "ca" },
+        .{ .operation = .insert, .text = "ba" },
+    }), diffs9.items); // Slide edit right
+
+    var diffs10 = DiffList{};
+    defer deinitDiffList(alloc, &diffs10);
+    try diffs10.appendSlice(alloc, &[_]Diff{
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "a"),
+        ),
+        Diff.init(
+            .delete,
+            try alloc.dupe(u8, "b"),
+        ),
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "c"),
+        ),
+        Diff.init(
+            .delete,
+            try alloc.dupe(u8, "ac"),
+        ),
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "x"),
+        ),
+    });
+    try diffCleanupMerge(alloc, &diffs10);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        Diff.init(.delete, "abc"),
+        Diff.init(.equal, "acx"),
+    }), diffs10.items); // Slide edit left recursive
+
+    var diffs11 = DiffList{};
+    defer deinitDiffList(alloc, &diffs11);
+    try diffs11.appendSlice(alloc, &[_]Diff{
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "x"),
+        ),
+        Diff.init(
+            .delete,
+            try alloc.dupe(u8, "ca"),
+        ),
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "c"),
+        ),
+        Diff.init(
+            .delete,
+            try alloc.dupe(u8, "b"),
+        ),
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "a"),
+        ),
+    });
+    try diffCleanupMerge(alloc, &diffs11);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        Diff.init(.equal, "xca"),
+        Diff.init(.delete, "cba"),
+    }), diffs11.items); // Slide edit right recursive
+
+    var diffs12 = DiffList{};
+    defer deinitDiffList(alloc, &diffs12);
+    try diffs12.appendSlice(alloc, &[_]Diff{
+        Diff.init(
+            .delete,
+            try alloc.dupe(u8, "b"),
+        ),
+        Diff.init(
+            .insert,
+            try alloc.dupe(u8, "ab"),
+        ),
+        Diff.init(
+            .equal,
+            try alloc.dupe(u8, "c"),
+        ),
+    });
+    try diffCleanupMerge(alloc, &diffs12);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        Diff.init(.insert, "a"),
+        Diff.init(.equal, "bc"),
+    }), diffs12.items); // Empty merge
+
+    var diffs13 = DiffList{};
+    defer deinitDiffList(alloc, &diffs13);
+    try diffs13.appendSlice(alloc, &[_]Diff{
+        Diff.init(.equal, ""),
+        Diff.init(.insert, try alloc.dupe(u8, "a")),
+        Diff.init(.equal, try alloc.dupe(u8, "b")),
+    });
+    try diffCleanupMerge(alloc, &diffs13);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
+        Diff.init(.insert, "a"),
+        Diff.init(.equal, "b"),
+    }), diffs13.items); // Empty equality
 }
 
 test diffCleanupSemanticLossless {
