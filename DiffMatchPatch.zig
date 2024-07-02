@@ -6,6 +6,28 @@ const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
 
+fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
+    defer diffs.deinit(allocator);
+    for (diffs.items) |d| {
+        if (d.text.len > 0) {
+            allocator.free(d.text);
+        }
+    }
+}
+
+fn freeRangeDiffList(
+    allocator: Allocator,
+    diffs: *DiffList,
+    start: usize,
+    len: usize,
+) void {
+    const after_range = start + len;
+    const range = diffs.items[start..after_range];
+    for (range) |d| {
+        allocator.free(d.text);
+    }
+}
+
 /// DMP with default configuration options
 pub const default = DiffMatchPatch{};
 
@@ -207,15 +229,15 @@ fn diffCompute(
     if (short_text.len == 1) {
         // Single character string.
         // After the previous speedup, the character can't be an equality.
-        try diffs.append(allocator, Diff.init(.delete, before));
-        try diffs.append(allocator, Diff.init(.insert, after));
+        try diffs.append(allocator, Diff.init(.delete, try allocator.dupe(u8, before)));
+        try diffs.append(allocator, Diff.init(.insert, try allocator.dupe(u8, after)));
         return diffs;
     }
 
     // Check to see if the problem can be split in two.
     if (try dmp.diffHalfMatch(allocator, before, after)) |half_match| {
         // A half-match was found, sort out the return data.
-
+        defer half_match.deinit(allocator);
         // Send both pairs off for separate processing.
         const diffs_a = try dmp.diffInternal(
             allocator,
@@ -238,7 +260,7 @@ fn diffCompute(
 
         // Merge the results.
         diffs = diffs_a;
-        try diffs.append(allocator, Diff.init(.equal, half_match.common_middle));
+        try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, half_match.common_middle)));
         try diffs.appendSlice(allocator, diffs_b.items);
         return diffs;
     }
@@ -579,7 +601,8 @@ fn diffLineMode(
     deadline: u64,
 ) DiffError!DiffList {
     // Scan the text on a line-by-line basis first.
-    const a = try diffLinesToChars(allocator, text1_in, text2_in);
+    var a = try diffLinesToChars(allocator, text1_in, text2_in);
+    defer a.deinit(allocator);
     const text1 = a.chars_1;
     const text2 = a.chars_2;
     const line_array = a.line_array;
@@ -796,22 +819,14 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                             if ((pointer - count_delete - count_insert) > 0 and
                                 diffs.items[pointer - count_delete - count_insert - 1].operation == .equal)
                             {
-                                // diffs.items[pointer - count_delete - count_insert - 1].text
-                                //     += text_insert.Substring(0, common_length);
-
                                 const ii = pointer - count_delete - count_insert - 1;
                                 var nt = try allocator.alloc(u8, diffs.items[ii].text.len + common_length);
 
-                                // try diffs.items[pointer - count_delete - count_insert - 1].text.append(allocator, text_insert.items[0..common_length]);
                                 const ot = diffs.items[ii].text;
                                 @memcpy(nt[0..ot.len], ot);
                                 @memcpy(nt[ot.len..], text_insert.items[0..common_length]);
-
-                                // allocator.free(diffs.items[ii].text);
                                 diffs.items[ii].text = nt;
                             } else {
-                                // diffs.Insert(0, Diff.init(.equal,
-                                //    text_insert.Substring(0, common_length)));
                                 const text = std.ArrayListUnmanaged(u8){
                                     .items = try allocator.dupe(u8, text_insert.items[0..common_length]),
                                 };
@@ -853,19 +868,11 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                 } else if (pointer != 0 and diffs.items[pointer - 1].operation == .equal) {
                     // Merge this equality with the previous one.
                     // TODO: Fix using realloc or smth
-
                     var nt = try allocator.alloc(u8, diffs.items[pointer - 1].text.len + diffs.items[pointer].text.len);
-
-                    // try diffs.items[pointer - count_delete - count_insert - 1].text.append(allocator, text_insert.items[0..common_length]);
                     const ot = diffs.items[pointer - 1].text;
                     @memcpy(nt[0..ot.len], ot);
                     @memcpy(nt[ot.len..], diffs.items[pointer].text);
-
-                    // allocator.free(diffs.items[pointer - 1].text);
                     diffs.items[pointer - 1].text = nt;
-                    // allocator.free(diffs.items[pointer].text);
-
-                    // try diffs.items[pointer - 1].text.append(allocator, diffs.items[pointer].text.items);
                     _ = diffs.orderedRemove(pointer);
                 } else {
                     pointer += 1;
@@ -893,12 +900,6 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
         {
             // This is a single edit surrounded by equalities.
             if (std.mem.endsWith(u8, diffs.items[pointer].text, diffs.items[pointer - 1].text)) {
-                // Shift the edit over the previous equality.
-                // diffs.items[pointer].text = diffs.items[pointer - 1].text +
-                //     diffs.items[pointer].text[0 .. diffs.items[pointer].text.len -
-                //     diffs.items[pointer - 1].text.len];
-                // diffs.items[pointer + 1].text = diffs.items[pointer - 1].text + diffs.items[pointer + 1].text;
-
                 const pt = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer].text[0 .. diffs.items[pointer].text.len -
@@ -908,21 +909,12 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
-
-                // allocator.free(diffs.items[pointer].text);
-                // allocator.free(diffs.items[pointer + 1].text);
-
                 diffs.items[pointer].text = pt;
                 diffs.items[pointer + 1].text = p1t;
-
+                // XXX reactivate freeRangeDiffList(allocator, diffs, pointer - 1, 1);
                 try diffs.replaceRange(allocator, pointer - 1, 1, &.{});
                 changes = true;
             } else if (std.mem.startsWith(u8, diffs.items[pointer].text, diffs.items[pointer + 1].text)) {
-                // Shift the edit over the next equality.
-                // diffs.items[pointer - 1].text += diffs.items[pointer + 1].text;
-                // diffs.items[pointer].text =
-                //     diffs.items[pointer].text[diffs.items[pointer + 1].text.len..] + diffs.items[pointer + 1].text;
-
                 const pm1t = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
@@ -931,13 +923,9 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     diffs.items[pointer].text[diffs.items[pointer + 1].text.len..],
                     diffs.items[pointer + 1].text,
                 });
-
-                // allocator.free(diffs.items[pointer - 1].text);
-                // allocator.free(diffs.items[pointer].text);
-
                 diffs.items[pointer - 1].text = pm1t;
                 diffs.items[pointer].text = pt;
-
+                // XXX reactivate freeRangeDiffList(allocator, diffs, pointer - 1, 1);
                 try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
                 changes = true;
             }
@@ -1043,8 +1031,10 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                         @intCast(pointer),
                         Diff.init(.equal, try allocator.dupe(u8, insertion[0..overlap_length1])),
                     );
+                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer-1)].text);
                     diffs.items[@intCast(pointer - 1)].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
+                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer+1)].text);
                     diffs.items[@intCast(pointer + 1)].text =
                         try allocator.dupe(u8, insertion[overlap_length1..]);
                     pointer += 1;
@@ -1061,11 +1051,13 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                         Diff.init(.equal, try allocator.dupe(u8, deletion[0..overlap_length2])),
                     );
                     diffs.items[@intCast(pointer - 1)].operation = .insert;
-                    diffs.items[@intCast(pointer - 1)].text =
-                        try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
+                    const new_minus = try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
+                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer-1)].text);
+                    diffs.items[@intCast(pointer - 1)].text = new_minus;
                     diffs.items[@intCast(pointer + 1)].operation = .delete;
-                    diffs.items[@intCast(pointer + 1)].text =
-                        try allocator.dupe(u8, deletion[overlap_length2..]);
+                    const new_plus = try allocator.dupe(u8, deletion[overlap_length2..]);
+                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer+1)].text);
+                    diffs.items[@intCast(pointer + 1)].text = new_plus;
                     pointer += 1;
                 }
             }
@@ -1114,7 +1106,7 @@ pub fn diffCleanupSemanticLossless(
                 const not_common = try allocator.dupe(u8, edit.items[0 .. edit.items.len - common_offset]);
                 defer allocator.free(not_common);
 
-                edit.items.len = 0;
+                edit.clearRetainingCapacity();
                 try edit.appendSlice(allocator, common_string);
                 try edit.appendSlice(allocator, not_common);
 
@@ -1167,16 +1159,23 @@ pub fn diffCleanupSemanticLossless(
             if (!std.mem.eql(u8, diffs.items[pointer - 1].text, best_equality_1.items)) {
                 // We have an improvement, save it back to the diff.
                 if (best_equality_1.items.len != 0) {
+                    // allocator.free(diffs.items[pointer - 1].text);
                     diffs.items[pointer - 1].text = try allocator.dupe(u8, best_equality_1.items);
                 } else {
-                    _ = diffs.orderedRemove(pointer - 1);
+                    const old_diff = diffs.orderedRemove(pointer - 1);
+                    // allocator.free(old_diff.text);
+                    _ = old_diff;
                     pointer -= 1;
                 }
+                // allocator.free(diffs.items[pointer].text);
                 diffs.items[pointer].text = try allocator.dupe(u8, best_edit.items);
                 if (best_equality_2.items.len != 0) {
+                    // allocator.free(diffs.items[pointer - 1].text);
                     diffs.items[pointer + 1].text = try allocator.dupe(u8, best_equality_2.items);
                 } else {
-                    _ = diffs.orderedRemove(pointer + 1);
+                    const old_diff = diffs.orderedRemove(pointer + 1);
+                    // allocator.free(old_diff.text);
+                    _ = old_diff;
                     pointer -= 1;
                 }
             }
@@ -1259,6 +1258,7 @@ pub fn diffCleanupEfficiency(
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities = DiffList{};
+    defer deinitDiffList(allocator, equalities);
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality = "";
     var pointer: isize = 0; // Index of current position.
