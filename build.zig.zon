@@ -3,6 +3,8 @@
     .version = "0.0.1",
     .paths = .{
         "DiffMatchPatch.zig",
+        ".gitattributes",
+        ".gitignore",
         "LICENSE",
         "README.md",
         "build.zig.zon",

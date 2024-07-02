@@ -6,6 +6,8 @@ pub fn build(b: *std.Build) void {
 
     _ = b.addModule("diffz", .{
         .root_source_file = b.path("DiffMatchPatch.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
     const lib = b.addStaticLibrary(.{
