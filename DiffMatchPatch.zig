@@ -2,6 +2,7 @@ const DiffMatchPatch = @This();
 
 const std = @import("std");
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
 
@@ -255,6 +256,16 @@ const HalfMatchResult = struct {
     prefix_after: []const u8,
     suffix_after: []const u8,
     common_middle: []const u8,
+
+    // TODO maybe check for empty slice here for fewer copies,
+    // as in, maybe we can transfer ownership and replace with "".
+    pub fn deinit(hmr: HalfMatchResult, alloc: Allocator) void {
+        alloc.free(hmr.prefix_before);
+        alloc.free(hmr.suffix_before);
+        alloc.free(hmr.prefix_after);
+        alloc.free(hmr.suffix_after);
+        alloc.free(hmr.common_middle);
+    }
 };
 
 /// Do the two texts share a Substring which is at least half the length of
@@ -296,16 +307,22 @@ fn diffHalfMatch(
         half_match = half_match_2.?;
     } else {
         // Both matched. Select the longest.
-        half_match = if (half_match_1.?.common_middle.len > half_match_2.?.common_middle.len)
-            half_match_1
-        else
-            half_match_2;
+        half_match = half: {
+            if (half_match_1.?.common_middle.len > half_match_2.?.common_middle.len) {
+                half_match_2.?.deinit(allocator);
+                break :half half_match_1;
+            } else {
+                half_match_1.?.deinit(allocator);
+                break :half half_match_2;
+            }
+        };
     }
 
     // A half-match was found, sort out the return data.
     if (before.len > after.len) {
-        return half_match;
+        return half_match.?;
     } else {
+        // Transfers ownership of all memory to new, permuted, half_match.
         const half_match_yes = half_match.?;
         return .{
             .prefix_before = half_match_yes.prefix_after,
@@ -337,6 +354,7 @@ fn diffHalfMatchInternal(
     var j: isize = -1;
 
     var best_common = std.ArrayListUnmanaged(u8){};
+    defer best_common.deinit(allocator);
     var best_long_text_a: []const u8 = "";
     var best_long_text_b: []const u8 = "";
     var best_short_text_a: []const u8 = "";
@@ -350,8 +368,10 @@ fn diffHalfMatchInternal(
         const suffix_length = diffCommonSuffix(long_text[0..i], short_text[0..@as(usize, @intCast(j))]);
         if (best_common.items.len < suffix_length + prefix_length) {
             best_common.items.len = 0;
-            try best_common.appendSlice(allocator, short_text[@as(usize, @intCast(j - @as(isize, @intCast(suffix_length)))) .. @as(usize, @intCast(j - @as(isize, @intCast(suffix_length)))) + suffix_length]);
-            try best_common.appendSlice(allocator, short_text[@as(usize, @intCast(j)) .. @as(usize, @intCast(j)) + prefix_length]);
+            const a = short_text[@as(usize, @intCast(j - @as(isize, @intCast(suffix_length)))) .. @as(usize, @intCast(j - @as(isize, @intCast(suffix_length)))) + suffix_length];
+            try best_common.appendSlice(allocator, a);
+            const b = short_text[@as(usize, @intCast(j)) .. @as(usize, @intCast(j)) + prefix_length];
+            try best_common.appendSlice(allocator, b);
 
             best_long_text_a = long_text[0 .. i - suffix_length];
             best_long_text_b = long_text[i + prefix_length ..];
@@ -361,11 +381,11 @@ fn diffHalfMatchInternal(
     }
     if (best_common.items.len * 2 >= long_text.len) {
         return .{
-            .prefix_before = best_long_text_a,
-            .suffix_before = best_long_text_b,
-            .prefix_after = best_short_text_a,
-            .suffix_after = best_short_text_b,
-            .common_middle = best_common.items,
+            .prefix_before = try allocator.dupe(u8, best_long_text_a),
+            .suffix_before = try allocator.dupe(u8, best_long_text_b),
+            .prefix_after = try allocator.dupe(u8, best_short_text_a),
+            .suffix_after = try allocator.dupe(u8, best_short_text_b),
+            .common_middle = try best_common.toOwnedSlice(allocator),
         };
     } else {
         return null;
@@ -1411,97 +1431,107 @@ test diffCommonOverlap {
 }
 
 test diffHalfMatch {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
+    const allocator = testing.allocator;
 
     var one_timeout = DiffMatchPatch{};
     one_timeout.diff_timeout = 1;
-
+    const dh1 = try one_timeout.diffHalfMatch(allocator, "1234567890", "abcdef");
     try testing.expectEqual(
         @as(?HalfMatchResult, null),
-        try one_timeout.diffHalfMatch(arena.allocator(), "1234567890", "abcdef"),
+        dh1,
     ); // No match #1
+    const dh2 = try one_timeout.diffHalfMatch(allocator, "12345", "23");
     try testing.expectEqual(
         @as(?HalfMatchResult, null),
-        try one_timeout.diffHalfMatch(arena.allocator(), "12345", "23"),
+        dh2,
     ); // No match #2
 
     // Single matches
-    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    var dh3 = (try one_timeout.diffHalfMatch(allocator, "1234567890", "a345678z")).?;
+    defer dh3.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
         .prefix_before = "12",
         .suffix_before = "90",
         .prefix_after = "a",
         .suffix_after = "z",
         .common_middle = "345678",
-    }), try one_timeout.diffHalfMatch(arena.allocator(), "1234567890", "a345678z")); // Single Match #1
+    }, dh3); // Single Match #1
 
-    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    var dh4 = (try one_timeout.diffHalfMatch(allocator, "a345678z", "1234567890")).?;
+    defer dh4.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
         .prefix_before = "a",
         .suffix_before = "z",
         .prefix_after = "12",
         .suffix_after = "90",
         .common_middle = "345678",
-    }), try one_timeout.diffHalfMatch(arena.allocator(), "a345678z", "1234567890")); // Single Match #2
+    }, dh4); // Single Match #2
 
-    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    var dh5 = (try one_timeout.diffHalfMatch(allocator, "abc56789z", "1234567890")).?;
+    defer dh5.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
         .prefix_before = "abc",
         .suffix_before = "z",
         .prefix_after = "1234",
         .suffix_after = "0",
         .common_middle = "56789",
-    }), try one_timeout.diffHalfMatch(arena.allocator(), "abc56789z", "1234567890")); // Single Match #3
+    }, dh5); // Single Match #3
 
-    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    var dh6 = (try one_timeout.diffHalfMatch(allocator, "a23456xyz", "1234567890")).?;
+    defer dh6.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
         .prefix_before = "a",
         .suffix_before = "xyz",
         .prefix_after = "1",
         .suffix_after = "7890",
         .common_middle = "23456",
-    }), try one_timeout.diffHalfMatch(arena.allocator(), "a23456xyz", "1234567890")); // Single Match #4
+    }, dh6); // Single Match #4
 
     // Multiple matches
-    try testing.expectEqualDeep(
-        @as(?HalfMatchResult, HalfMatchResult{
-            .prefix_before = "12123",
-            .suffix_before = "123121",
-            .prefix_after = "a",
-            .suffix_after = "z",
-            .common_middle = "1234123451234",
-        }),
-        try one_timeout.diffHalfMatch(arena.allocator(), "121231234123451234123121", "a1234123451234z"),
-    ); // Multiple Matches #1
+    var dh7 = (try one_timeout.diffHalfMatch(allocator, "121231234123451234123121", "a1234123451234z")).?;
+    defer dh7.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
+        .prefix_before = "12123",
+        .suffix_before = "123121",
+        .prefix_after = "a",
+        .suffix_after = "z",
+        .common_middle = "1234123451234",
+    }, dh7); // Multiple Matches #1
 
-    try testing.expectEqualDeep(
-        @as(?HalfMatchResult, HalfMatchResult{
-            .prefix_before = "",
-            .suffix_before = "-=-=-=-=-=",
-            .prefix_after = "x",
-            .suffix_after = "",
-            .common_middle = "x-=-=-=-=-=-=-=",
-        }),
-        try one_timeout.diffHalfMatch(arena.allocator(), "x-=-=-=-=-=-=-=-=-=-=-=-=", "xx-=-=-=-=-=-=-="),
-    ); // Multiple Matches #2
+    var dh8 = (try one_timeout.diffHalfMatch(allocator, "x-=-=-=-=-=-=-=-=-=-=-=-=", "xx-=-=-=-=-=-=-=")).?;
+    defer dh8.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
+        .prefix_before = "",
+        .suffix_before = "-=-=-=-=-=",
+        .prefix_after = "x",
+        .suffix_after = "",
+        .common_middle = "x-=-=-=-=-=-=-=",
+    }, dh8); // Multiple Matches #2
 
-    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    var dh9 = (try one_timeout.diffHalfMatch(allocator, "-=-=-=-=-=-=-=-=-=-=-=-=y", "-=-=-=-=-=-=-=yy")).?;
+    defer dh9.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
         .prefix_before = "-=-=-=-=-=",
         .suffix_before = "",
         .prefix_after = "",
         .suffix_after = "y",
         .common_middle = "-=-=-=-=-=-=-=y",
-    }), try one_timeout.diffHalfMatch(arena.allocator(), "-=-=-=-=-=-=-=-=-=-=-=-=y", "-=-=-=-=-=-=-=yy")); // Multiple Matches #3
+    }, dh9); // Multiple Matches #3
 
     // Other cases
     // Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
-    try testing.expectEqualDeep(@as(?HalfMatchResult, HalfMatchResult{
+    var dh10 = (try one_timeout.diffHalfMatch(allocator, "qHilloHelloHew", "xHelloHeHulloy")).?;
+    defer dh10.deinit(allocator);
+    try testing.expectEqualDeep(HalfMatchResult{
         .prefix_before = "qHillo",
         .suffix_before = "w",
         .prefix_after = "x",
         .suffix_after = "Hulloy",
         .common_middle = "HelloHe",
-    }), try one_timeout.diffHalfMatch(arena.allocator(), "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
+    }, dh10); // Non-optimal halfmatch
 
     one_timeout.diff_timeout = 0;
-    try testing.expectEqualDeep(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(arena.allocator(), "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
+    try testing.expectEqualDeep(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(allocator, "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
 }
 
 test diffLinesToChars {
