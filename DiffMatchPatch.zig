@@ -632,19 +632,16 @@ fn diffLineMode(
         switch (diffs.items[pointer].operation) {
             .insert => {
                 count_insert += 1;
-                // text_insert += diffs.items[pointer].text;
                 try text_insert.appendSlice(allocator, diffs.items[pointer].text);
             },
             .delete => {
                 count_delete += 1;
-                // text_delete += diffs.items[pointer].text;
                 try text_delete.appendSlice(allocator, diffs.items[pointer].text);
             },
             .equal => {
                 // Upon reaching an equality, check for prior redundancies.
                 if (count_delete >= 1 and count_insert >= 1) {
                     // Delete the offending records and add the merged ones.
-                    // diffs.RemoveRange(pointer - count_delete - count_insert, count_delete + count_insert);
                     freeRangeDiffList(
                         allocator,
                         &diffs,
@@ -660,7 +657,6 @@ fn diffLineMode(
                     pointer = pointer - count_delete - count_insert;
                     var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
                     defer sub_diff.deinit(allocator);
-                    // diffs.InsertRange(pointer, sub_diff);
                     try diffs.insertSlice(allocator, pointer, sub_diff.items);
                     pointer = pointer + sub_diff.items.len;
                 }
@@ -672,8 +668,7 @@ fn diffLineMode(
         }
         pointer += 1;
     }
-    // diffs.RemoveAt(diffs.Count - 1); // Remove the dummy entry at the end.
-    diffs.items.len -= 1;
+    diffs.items.len -= 1; // Remove the dummy entry at the end.
 
     return diffs;
 }
@@ -2140,6 +2135,8 @@ test diff {
     var this = DiffMatchPatch{};
     try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "", "", false)).items); // diff: Null case.
 
+    // TODO This is the last set of tests using the arena.  Someone should
+    // rewrite them not to do so. -Sam
     diffs.items.len = 0;
     try diffs.appendSlice(arena.allocator(), &.{Diff.init(.equal, "abc")});
     try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "abc", false)).items); // diff: Equality.
@@ -2191,13 +2188,15 @@ test diff {
     try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.insert, " "), Diff.init(.equal, "a"), Diff.init(.insert, "nd"), Diff.init(.equal, " [[Pennsylvania]]"), Diff.init(.delete, " and [[New") });
     try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)).items); // diff: Large equality.
 
+    // end of Arena Zone
+
     this.diff_timeout = 100; // 100ms
     // Increase the text lengths by 1024 times to ensure a timeout.
     {
         const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
         const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
         const start_time = std.time.milliTimestamp();
-        var time_diff = try this.diff(allocator, a, b, false); // Travis - TODO not sure what the third arg should be
+        var time_diff = try this.diff(allocator, a, b, false);
         defer deinitDiffList(allocator, &time_diff);
         const end_time = std.time.milliTimestamp();
         // Test that we took at least the timeout period.
@@ -2231,15 +2230,19 @@ test diff {
 
     const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
     const b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n";
-    const texts_linemode = try rebuildtexts(arena.allocator(), try this.diff(arena.allocator(), a, b, true));
+    var diffs_linemode = try this.diff(allocator, a, b, true);
+    defer deinitDiffList(allocator, &diffs_linemode);
+    const texts_linemode = try rebuildtexts(allocator, diffs_linemode);
     defer {
-        arena.allocator().free(texts_linemode[0]);
-        arena.allocator().free(texts_linemode[1]);
+        allocator.free(texts_linemode[0]);
+        allocator.free(texts_linemode[1]);
     }
-    const texts_textmode = try rebuildtexts(arena.allocator(), try this.diff(arena.allocator(), a, b, false));
+    var diffs_textmode = try this.diff(allocator, a, b, false);
+    defer deinitDiffList(allocator, &diffs_textmode);
+    const texts_textmode = try rebuildtexts(allocator, diffs_textmode);
     defer {
-        arena.allocator().free(texts_textmode[0]);
-        arena.allocator().free(texts_textmode[1]);
+        allocator.free(texts_textmode[0]);
+        allocator.free(texts_textmode[1]);
     }
     try testing.expectEqualDeep(texts_textmode, texts_linemode); // diff: Overlap line-mode.
 }
