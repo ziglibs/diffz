@@ -2,6 +2,7 @@ const DiffMatchPatch = @This();
 
 const std = @import("std");
 const testing = std.testing;
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
@@ -154,26 +155,71 @@ fn diffInternal(
     return diffs;
 }
 
+/// Test if a byte is a UTF-8 follow byte
+inline fn is_follow(byte: u8) bool {
+    return byte & 0b1100_0000 == 0b1000_0000;
+}
+
+/// Find a common prefix which respects UTF-8 code point boundaries.
 fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
     const n = @min(before.len, after.len);
     var i: usize = 0;
 
     while (i < n) : (i += 1) {
-        if (before[i] != after[i]) {
-            return i;
+        var b = before[i];
+        const a = after[i];
+        if (a != b) {
+            if (is_follow(a) and is_follow(b)) {
+                // We've clipped a codepoint, back out
+                if (i == 0) return i; // Malformed UTF-8 is always possible
+                i -= 1;
+                // We'll track `before` since they must be the same:
+                b = before[i];
+                assert(b == after[i]);
+                while (i != 0 and is_follow(b)) {
+                    i -= 1;
+                    b = before[i];
+                    assert(b == after[i]);
+                }
+                // Now we're either at zero, or at the lead:
+                return i;
+            } else {
+                return i;
+            }
         }
     }
 
     return n;
 }
 
+/// Find a common suffix which respects UTF-8 code point boundaries
 fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
     const n = @min(before.len, after.len);
     var i: usize = 1;
-
+    var was_follow = false;
     while (i <= n) : (i += 1) {
-        if (before[before.len - i] != after[after.len - i]) {
-            return i - 1;
+        var b = before[before.len - i];
+        const a = after[after.len - i];
+        if (a != b) {
+            if (was_follow) {
+                // Means we're at at least 2:
+                assert(i > 1);
+                // We just saw an identical follow byte, so we back
+                // out forward:
+                i -= 1;
+                b = before[before.len - i];
+                assert(b == after[after.len - i]);
+                while (i > 1 and is_follow(b)) {
+                    i -= 1;
+                    b = before[before.len - i];
+                    assert(b == after[after.len - i]);
+                } // Either at one, or no more follow bytes:
+                return i - 1;
+            } else {
+                return i - 1;
+            }
+        } else {
+            was_follow = is_follow(b); // no need to check twice
         }
     }
 
@@ -812,38 +858,38 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                 // Upon reaching an equality, check for prior redundancies.
                 if (count_delete + count_insert > 1) {
                     if (count_delete != 0 and count_insert != 0) {
-                        // Factor out any common prefixies.
+                        // Factor out any common prefixes.
                         common_length = diffCommonPrefix(text_insert.items, text_delete.items);
                         if (common_length != 0) {
                             if ((pointer - count_delete - count_insert) > 0 and
                                 diffs.items[pointer - count_delete - count_insert - 1].operation == .equal)
-                            {
+                            { // The prefix is not at the start of the diffs
                                 const ii = pointer - count_delete - count_insert - 1;
                                 var nt = try allocator.alloc(u8, diffs.items[ii].text.len + common_length);
-
                                 const ot = diffs.items[ii].text;
                                 defer allocator.free(ot);
                                 @memcpy(nt[0..ot.len], ot);
                                 @memcpy(nt[ot.len..], text_insert.items[0..common_length]);
                                 diffs.items[ii].text = nt;
-                            } else {
+                            } else { // The prefix is at the start of the diffs
                                 const text = try allocator.dupe(u8, text_insert.items[0..common_length]);
                                 try diffs.insert(allocator, 0, Diff.init(.equal, text));
-                                pointer += 1;
+                                pointer += 1; // Keep pointer pointed at current diff
                             }
+                            // Remove merged prefixes
                             try text_insert.replaceRange(allocator, 0, common_length, &.{});
                             try text_delete.replaceRange(allocator, 0, common_length, &.{});
                         }
                         // Factor out any common suffixies.
-                        // @ZigPort this seems very wrong
                         common_length = diffCommonSuffix(text_insert.items, text_delete.items);
                         if (common_length != 0) {
+                            // Move the common part to the equal diff
                             const old_text = diffs.items[pointer].text;
                             defer allocator.free(old_text);
                             diffs.items[pointer].text = try std.mem.concat(allocator, u8, &.{
                                 text_insert.items[text_insert.items.len - common_length ..],
                                 old_text,
-                            });
+                            }); // Remove it from the ends of the insert/delete pair
                             text_insert.items.len -= common_length;
                             text_delete.items.len -= common_length;
                         }
@@ -872,7 +918,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     pointer += 1;
                 } else if (pointer != 0 and diffs.items[pointer - 1].operation == .equal) {
                     // Merge this equality with the previous one.
-                    // TODO: Fix using realloc or smth
+                    // Diff texts are []const u8 so a realloc isn't practical here
                     var nt = try allocator.alloc(u8, diffs.items[pointer - 1].text.len + diffs.items[pointer].text.len);
                     const ot = diffs.items[pointer - 1].text;
                     defer (allocator.free(ot));
