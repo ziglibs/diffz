@@ -969,6 +969,7 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities = ArrayListUnmanaged(isize){};
+    defer equalities.deinit(allocator);
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality: ?[]const u8 = null;
     var pointer: isize = 0; // Index of current position.
@@ -1050,15 +1051,15 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 {
                     // Overlap found.
                     // Insert an equality and trim the surrounding edits.
+                    defer allocator.free(deletion);
+                    defer allocator.free(insertion);
                     try diffs.insert(
                         allocator,
                         @intCast(pointer),
                         Diff.init(.equal, try allocator.dupe(u8, insertion[0..overlap_length1])),
                     );
-                    allocator.free(diffs.items[@intCast(pointer - 1)].text);
                     diffs.items[@intCast(pointer - 1)].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
-                    allocator.free(diffs.items[@intCast(pointer + 1)].text);
                     diffs.items[@intCast(pointer + 1)].text =
                         try allocator.dupe(u8, insertion[overlap_length1..]);
                     pointer += 1;
@@ -1069,6 +1070,8 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 {
                     // Reverse overlap found.
                     // Insert an equality and swap and trim the surrounding edits.
+                    defer allocator.free(deletion);
+                    defer allocator.free(insertion);
                     try diffs.insert(
                         allocator,
                         @intCast(pointer),
@@ -1076,7 +1079,6 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     );
                     diffs.items[@intCast(pointer - 1)].operation = .insert;
                     const new_minus = try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
-                    allocator.free(diffs.items[@intCast(pointer - 1)].text);
                     diffs.items[@intCast(pointer - 1)].text = new_minus;
                     diffs.items[@intCast(pointer + 1)].operation = .delete;
                     const new_plus = try allocator.dupe(u8, deletion[overlap_length2..]);
@@ -2248,7 +2250,11 @@ test "diff main" {
     {
         const a = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
         const b = "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
-        try testing.expectEqualDeep(try this.diff(arena.allocator(), a, b, true), try this.diff(arena.allocator(), a, b, false)); // diff: Single line-mode.
+        var diff_checked = try this.diff(alloc, a, b, true);
+        defer deinitDiffList(alloc, &diff_checked);
+        var diff_unchecked = try this.diff(alloc, a, b, false);
+        defer deinitDiffList(alloc, &diff_unchecked);
+        try testing.expectEqualDeep(diff_checked, diff_unchecked); // diff: Single line-mode.
     }
 
     const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
@@ -2264,139 +2270,147 @@ test "diff main" {
         arena.allocator().free(texts_textmode[1]);
     }
     try testing.expectEqualDeep(texts_textmode, texts_linemode); // diff: Overlap line-mode.
-
-    // Test null inputs -- not needed because nulls can't be passed in C#.
 }
 
 test diffCleanupSemantic {
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+
+    const alloc = std.testing.allocator;
+    // Cleanup semantically trivial equalities.
+    // Null case.
+    var diffs_empty = DiffList{};
+    defer deinitDiffList(alloc, &diffs_empty);
+    // var this = default;
+    try diffCleanupSemantic(arena.allocator(), &diffs_empty);
+    try testing.expectEqual(@as(usize, 0), diffs_empty.items.len); // Null case
+
+    var diffs = DiffList{};
+    defer deinitDiffList(alloc, &diffs);
+    diffs.items.len = 0;
+    try diffs.appendSlice(alloc, &.{
+        Diff.init(.delete, try alloc.dupe(u8, "ab")),
+        Diff.init(.insert, try alloc.dupe(u8, "cd")),
+        Diff.init(.equal, try alloc.dupe(u8, "12")),
+        Diff.init(.delete, try alloc.dupe(u8, "e")),
+    });
+    try diffCleanupSemantic(alloc, &diffs);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #1
+        Diff.init(.delete, "ab"),
+        Diff.init(.insert, "cd"),
+        Diff.init(.equal, "12"),
+        Diff.init(.delete, "e"),
+    }), diffs.items);
+
+    var diffs2 = DiffList{};
+    defer deinitDiffList(alloc, &diffs2);
+    diffs2.items.len = 0;
+    try diffs2.appendSlice(alloc, &.{
+        Diff.init(.delete, try alloc.dupe(u8, "abc")),
+        Diff.init(.insert, try alloc.dupe(u8, "ABC")),
+        Diff.init(.equal, try alloc.dupe(u8, "1234")),
+        Diff.init(.delete, try alloc.dupe(u8, "wxyz")),
+    });
+    try diffCleanupSemantic(alloc, &diffs2);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #2
+        Diff.init(.delete, "abc"),
+        Diff.init(.insert, "ABC"),
+        Diff.init(.equal, "1234"),
+        Diff.init(.delete, "wxyz"),
+    }), diffs2.items);
+
+    var diffs3 = DiffList{};
+    defer deinitDiffList(alloc, &diffs3);
+    try diffs3.appendSlice(alloc, &.{
+        Diff.init(.delete, try alloc.dupe(u8, "a")),
+        Diff.init(.equal, try alloc.dupe(u8, "b")),
+        Diff.init(.delete, try alloc.dupe(u8, "c")),
+    });
+    try diffCleanupSemantic(alloc, &diffs3);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Simple elimination
+        Diff.init(.delete, "abc"),
+        Diff.init(.insert, "b"),
+    }), diffs3.items);
+
+    var diffs4 = DiffList{};
+    defer deinitDiffList(alloc, &diffs4);
+    try diffs4.appendSlice(alloc, &.{
+        Diff.init(.delete, try alloc.dupe(u8, "ab")),
+        Diff.init(.equal, try alloc.dupe(u8, "cd")),
+        Diff.init(.delete, try alloc.dupe(u8, "e")),
+        Diff.init(.equal, try alloc.dupe(u8, "f")),
+        Diff.init(.insert, try alloc.dupe(u8, "g")),
+    });
+    try diffCleanupSemantic(alloc, &diffs4);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Backpass elimination
+        Diff.init(.delete, "abcdef"),
+        Diff.init(.insert, "cdfg"),
+    }), diffs4.items);
+
+    var diffs5 = DiffList{};
+    defer deinitDiffList(alloc, &diffs5);
+    try diffs5.appendSlice(alloc, &.{
+        Diff.init(.insert, try alloc.dupe(u8, "1")),
+        Diff.init(.equal, try alloc.dupe(u8, "A")),
+        Diff.init(.delete, try alloc.dupe(u8, "B")),
+        Diff.init(.insert, try alloc.dupe(u8, "2")),
+        Diff.init(.equal, try alloc.dupe(u8, "_")),
+        Diff.init(.insert, try alloc.dupe(u8, "1")),
+        Diff.init(.equal, try alloc.dupe(u8, "A")),
+        Diff.init(.delete, try alloc.dupe(u8, "B")),
+        Diff.init(.insert, try alloc.dupe(u8, "2")),
+    });
+    try diffCleanupSemantic(alloc, &diffs5);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Multiple elimination
+        Diff.init(.delete, "AB_AB"),
+        Diff.init(.insert, "1A2_1A2"),
+    }), diffs5.items);
+
+    var diffs6 = DiffList{};
+    defer deinitDiffList(alloc, &diffs6);
+    try diffs6.appendSlice(alloc, &.{
+        Diff.init(.equal, try alloc.dupe(u8, "The c")),
+        Diff.init(.delete, try alloc.dupe(u8, "ow and the c")),
+        Diff.init(.equal, try alloc.dupe(u8, "at.")),
+    });
+    try diffCleanupSemantic(alloc, &diffs6);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Word boundaries
+        Diff.init(.equal, "The "),
+        Diff.init(.delete, "cow and the "),
+        Diff.init(.equal, "cat."),
+    }), diffs6.items);
+
+    var diffs7 = DiffList{};
+    defer deinitDiffList(alloc, &diffs7);
+    try diffs7.appendSlice(alloc, &.{
+        Diff.init(.delete, try alloc.dupe(u8, "abcxx")),
+        Diff.init(.insert, try alloc.dupe(u8, "xxdef")),
+    });
+    try diffCleanupSemantic(alloc, &diffs7);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No overlap elimination
+        Diff.init(.delete, "abcxx"),
+        Diff.init(.insert, "xxdef"),
+    }), diffs7.items);
+
+    var diffs8 = DiffList{};
+    defer deinitDiffList(alloc, &diffs8);
+    try diffs8.appendSlice(alloc, &.{
+        Diff.init(.delete, try alloc.dupe(u8, "abcxxx")),
+        Diff.init(.insert, try alloc.dupe(u8, "xxxdef")),
+    });
+    try diffCleanupSemantic(alloc, &diffs8);
+    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Overlap elimination
+        Diff.init(.delete, "abc"),
+        Diff.init(.equal, "xxx"),
+        Diff.init(.insert, "def"),
+    }), diffs8.items);
+
     if (false) {
-        var arena = std.heap.ArenaAllocator.init(talloc);
-        defer arena.deinit();
-
-        // Cleanup semantically trivial equalities.
-        // Null case.
-        var diffs = DiffList{};
-        defer diffs.deinit(arena.allocator());
-        // var this = default;
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqual(@as(usize, 0), diffs.items.len); // Null case
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.delete, "ab"),
-            Diff.init(.insert, "cd"),
-            Diff.init(.equal, "12"),
-            Diff.init(.delete, "e"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #1
-            Diff.init(.delete, "ab"),
-            Diff.init(.insert, "cd"),
-            Diff.init(.equal, "12"),
-            Diff.init(.delete, "e"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.delete, "abc"),
-            Diff.init(.insert, "ABC"),
-            Diff.init(.equal, "1234"),
-            Diff.init(.delete, "wxyz"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #2
-            Diff.init(.delete, "abc"),
-            Diff.init(.insert, "ABC"),
-            Diff.init(.equal, "1234"),
-            Diff.init(.delete, "wxyz"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.delete, "a"),
-            Diff.init(.equal, "b"),
-            Diff.init(.delete, "c"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Simple elimination
-            Diff.init(.delete, "abc"),
-            Diff.init(.insert, "b"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.delete, "ab"),
-            Diff.init(.equal, "cd"),
-            Diff.init(.delete, "e"),
-            Diff.init(.equal, "f"),
-            Diff.init(.insert, "g"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Backpass elimination
-            Diff.init(.delete, "abcdef"),
-            Diff.init(.insert, "cdfg"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.insert, "1"),
-            Diff.init(.equal, "A"),
-            Diff.init(.delete, "B"),
-            Diff.init(.insert, "2"),
-            Diff.init(.equal, "_"),
-            Diff.init(.insert, "1"),
-            Diff.init(.equal, "A"),
-            Diff.init(.delete, "B"),
-            Diff.init(.insert, "2"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Multiple elimination
-            Diff.init(.delete, "AB_AB"),
-            Diff.init(.insert, "1A2_1A2"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.equal, "The c"),
-            Diff.init(.delete, "ow and the c"),
-            Diff.init(.equal, "at."),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Word boundaries
-            Diff.init(.equal, "The "),
-            Diff.init(.delete, "cow and the "),
-            Diff.init(.equal, "cat."),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.delete, "abcxx"),
-            Diff.init(.insert, "xxdef"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No overlap elimination
-            Diff.init(.delete, "abcxx"),
-            Diff.init(.insert, "xxdef"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
-            Diff.init(.delete, "abcxxx"),
-            Diff.init(.insert, "xxxdef"),
-        });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Overlap elimination
-            Diff.init(.delete, "abc"),
-            Diff.init(.equal, "xxx"),
-            Diff.init(.insert, "def"),
-        }), diffs.items);
-
-        diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.delete, "xxxabc"),
             Diff.init(.insert, "defxxx"),
         });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
+        try diffCleanupSemantic(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Reverse overlap elimination
             Diff.init(.insert, "def"),
             Diff.init(.equal, "xxx"),
@@ -2404,14 +2418,14 @@ test diffCleanupSemantic {
         }), diffs.items);
 
         diffs.items.len = 0;
-        try diffs.appendSlice(arena.allocator(), &.{
+        try diffs.appendSlice(alloc, &.{
             Diff.init(.delete, "abcd1212"),
             Diff.init(.insert, "1212efghi"),
             Diff.init(.equal, "----"),
             Diff.init(.delete, "A3"),
             Diff.init(.insert, "3BC"),
         });
-        try diffCleanupSemantic(arena.allocator(), &diffs);
+        try diffCleanupSemantic(alloc, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Two overlap eliminations
             Diff.init(.delete, "abcd"),
             Diff.init(.equal, "1212"),
