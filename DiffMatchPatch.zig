@@ -2420,6 +2420,46 @@ test "Unicode diffs" {
         Diff.init(.delete, "γ"),
         Diff.init(.insert, "δ"),
     }), greek_diff.items);
+    // ө is 0xd3, 0xa9, թ is 0xd6, 0xa9
+    var prefix_diff = try this.diff(
+        allocator,
+        "abө",
+        "abթ",
+        false,
+    );
+    defer deinitDiffList(allocator, &prefix_diff);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "ab"),
+        Diff.init(.delete, "ө"),
+        Diff.init(.insert, "թ"),
+    }), prefix_diff.items);
+    var mid_diff = try this.diff(
+        allocator,
+        "αөβ",
+        "αթβ",
+        false,
+    );
+    defer deinitDiffList(allocator, &mid_diff);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "α"),
+        Diff.init(.delete, "ө"),
+        Diff.init(.insert, "թ"),
+        Diff.init(.equal, "β"),
+    }), mid_diff.items);
+
+    var mid_prefix = try this.diff(
+        allocator,
+        "αβλ",
+        "αδλ",
+        false,
+    );
+    defer deinitDiffList(allocator, &mid_prefix);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "α"),
+        Diff.init(.delete, "β"),
+        Diff.init(.insert, "δ"),
+        Diff.init(.equal, "λ"),
+    }), mid_prefix.items);
 }
 
 test diffCleanupSemantic {
