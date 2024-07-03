@@ -266,6 +266,7 @@ fn diffCompute(
             .delete
         else
             .insert;
+        // No need to adjust this index since any split is already valid
         try diffs.append(allocator, Diff.init(op, try allocator.dupe(u8, long_text[0..index])));
         try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, short_text)));
         try diffs.append(allocator, Diff.init(op, try allocator.dupe(u8, long_text[index + short_text.len ..])));
@@ -2288,6 +2289,23 @@ test diff {
         allocator.free(texts_textmode[1]);
     }
     try testing.expectEqualDeep(texts_textmode, texts_linemode); // diff: Overlap line-mode.
+}
+
+test "Unicode diffs" {
+    const allocator = std.testing.allocator;
+    const this = DiffMatchPatch{};
+    var greek_diff = try this.diff(
+        allocator,
+        "αβγ",
+        "αβδ",
+        false,
+    );
+    defer deinitDiffList(allocator, &greek_diff);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "αβ"),
+        Diff.init(.insert, "δ"),
+        Diff.init(.equal, "γ"),
+    }), greek_diff.items);
 }
 
 test diffCleanupSemantic {
