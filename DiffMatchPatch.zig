@@ -1535,10 +1535,10 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     // Performance analysis: https://neil.fraser.name/news/2010/11/04/
     var best: usize = 0;
     var length: usize = 1;
-    while (true) {
+    const best_idx = idx: while (true) {
         const pattern = text1[text_length - length ..];
         const found = std.mem.indexOf(u8, text2, pattern) orelse
-            return best;
+            break :idx best;
 
         length += found;
 
@@ -1546,7 +1546,34 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
             best = length;
             length += 1;
         }
+    };
+    if (best_idx == 0) return best_idx;
+    // This would mean a truncation: lead or follow, followed by a follow
+    // which differs (or it would be included in our overlap)
+    if (text2[best_idx] >= 0x80 and is_follow(text2[best_idx + 1])) {
+        // back out
+        assert(best_idx == best);
+        if (!is_follow(text2[best])) {
+            // It's a lead, one back is fine
+            return best - 1;
+        }
+        best -= 1;
+        if (best == 0) return 0;
+        // It's ok to get no overlap, so we ignore malformation:
+        // a bunch of follows could walk back to zero, and that's
+        // fine with us
+        while (is_follow(text2[best])) {
+            best -= 1;
+            if (best == 0) return 0;
+        }
+        // should be a lead, but ASCII is fine, so
+        if (text2[best] < 0x80) {
+            return best;
+        } else {
+            return best - 1;
+        }
     }
+    return best_idx;
 }
 
 // DONE [✅]: Allocate all text in diffs to
