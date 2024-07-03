@@ -645,6 +645,12 @@ fn diffLineMode(
                 if (count_delete >= 1 and count_insert >= 1) {
                     // Delete the offending records and add the merged ones.
                     // diffs.RemoveRange(pointer - count_delete - count_insert, count_delete + count_insert);
+                    freeRangeDiffList(
+                        allocator,
+                        &diffs,
+                        pointer - count_delete - count_insert,
+                        count_delete + count_insert,
+                    );
                     try diffs.replaceRange(
                         allocator,
                         pointer - count_delete - count_insert,
@@ -652,7 +658,8 @@ fn diffLineMode(
                         &.{},
                     );
                     pointer = pointer - count_delete - count_insert;
-                    const sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
+                    var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
+                    defer sub_diff.deinit(allocator);
                     // diffs.InsertRange(pointer, sub_diff);
                     try diffs.insertSlice(allocator, pointer, sub_diff.items);
                     pointer = pointer + sub_diff.items.len;
@@ -1048,10 +1055,10 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                         @intCast(pointer),
                         Diff.init(.equal, try allocator.dupe(u8, insertion[0..overlap_length1])),
                     );
-                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer-1)].text);
+                    allocator.free(diffs.items[@intCast(pointer - 1)].text);
                     diffs.items[@intCast(pointer - 1)].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
-                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer+1)].text);
+                    allocator.free(diffs.items[@intCast(pointer + 1)].text);
                     diffs.items[@intCast(pointer + 1)].text =
                         try allocator.dupe(u8, insertion[overlap_length1..]);
                     pointer += 1;
@@ -1069,11 +1076,11 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     );
                     diffs.items[@intCast(pointer - 1)].operation = .insert;
                     const new_minus = try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
-                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer-1)].text);
+                    allocator.free(diffs.items[@intCast(pointer - 1)].text);
                     diffs.items[@intCast(pointer - 1)].text = new_minus;
                     diffs.items[@intCast(pointer + 1)].operation = .delete;
                     const new_plus = try allocator.dupe(u8, deletion[overlap_length2..]);
-                    // XXX activate: allocator.free(diffs.items[@inteCast(pointer+1)].text);
+                    allocator.free(diffs.items[@intCast(pointer + 1)].text);
                     diffs.items[@intCast(pointer + 1)].text = new_plus;
                     pointer += 1;
                 }
@@ -2146,9 +2153,12 @@ test diffBisect {
 }
 
 const talloc = testing.allocator;
-test diff {
+
+// XXX rename to diff
+test "diff main" {
     var arena = std.heap.ArenaAllocator.init(talloc);
     defer arena.deinit();
+    const alloc = std.testing.allocator;
 
     // Perform a trivial diff.
     var diffs = DiffList{};
@@ -2213,7 +2223,8 @@ test diff {
         const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
         const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
         const start_time = std.time.milliTimestamp();
-        _ = try this.diff(arena.allocator(), a, b, false); // Travis - TODO not sure what the third arg should be
+        var time_diff = try this.diff(alloc, a, b, false); // Travis - TODO not sure what the third arg should be
+        defer deinitDiffList(alloc, &time_diff);
         const end_time = std.time.milliTimestamp();
         // Test that we took at least the timeout period.
         try testing.expect(this.diff_timeout <= end_time - start_time); // diff: Timeout min.
@@ -2228,7 +2239,11 @@ test diff {
         // Must be long to pass the 100 char cutoff.
         const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
         const b = "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n";
-        try testing.expectEqualDeep(try this.diff(arena.allocator(), a, b, true), try this.diff(arena.allocator(), a, b, false)); // diff: Simple line-mode.
+        var diff_checked = try this.diff(alloc, a, b, true);
+        defer deinitDiffList(alloc, &diff_checked);
+        var diff_unchecked = try this.diff(alloc, a, b, false);
+        defer deinitDiffList(alloc, &diff_unchecked);
+        try testing.expectEqualDeep(diff_checked, diff_unchecked); // diff: Simple line-mode.
     }
     {
         const a = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
