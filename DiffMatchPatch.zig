@@ -255,9 +255,6 @@ fn diffCompute(
         );
         defer diffs_b.deinit(allocator);
 
-        var tmp_diffs = diffs;
-        defer tmp_diffs.deinit(allocator);
-
         // Merge the results.
         diffs = diffs_a;
         try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, half_match.common_middle)));
