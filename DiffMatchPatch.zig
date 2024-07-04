@@ -8,6 +8,37 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
 const PatchList = ArrayListUnmanaged(Patch);
 
+//| Fields
+
+/// Number of milliseconds to map a diff before giving up (0 for infinity).
+diff_timeout: u64 = 1000,
+/// Cost of an empty edit operation in terms of edit characters.
+diff_edit_cost: u16 = 4,
+
+/// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
+/// This defaults to 0.05, on the premise that the library will mostly be
+/// used in cases where failure is better than a bad patch application.
+match_threshold: f32 = 0.05,
+
+/// How far to search for a match (0 = exact location, 1000+ = broad match).
+/// A match this many characters away from the expected location will add
+/// 1.0 to the score (0.0 is a perfect match).
+match_distance: u32 = 1000,
+
+/// The number of bits in a usize.
+match_max_bits: u8 = 64,
+
+/// When deleting a large block of text (over ~64 characters), how close
+/// do the contents have to be to match the expected contents. (0.0 =
+/// perfection, 1.0 = very loose).  Note that Match_Threshold controls
+/// how closely the end points of a delete need to match.
+patch_delete_threshold: f32 = 0.5,
+
+/// Chunk size for context length.
+patch_margin: u8 = 4,
+
+//| Allocation Management Helpers
+
 /// Deinit an `ArrayListUnmanaged(Diff)` and the allocated slices of
 /// text in each `Diff`.
 pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
@@ -115,33 +146,6 @@ pub const Patch = struct {
         deinitDiffList(allocator, patch.diffs);
     }
 };
-
-/// Number of milliseconds to map a diff before giving up (0 for infinity).
-diff_timeout: u64 = 1000,
-/// Cost of an empty edit operation in terms of edit characters.
-diff_edit_cost: u16 = 4,
-
-/// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
-/// This defaults to 0.05, on the premise that the library will mostly be
-/// used in cases where failure is better than a bad patch application.
-match_threshold: f32 = 0.05,
-
-/// How far to search for a match (0 = exact location, 1000+ = broad match).
-/// A match this many characters away from the expected location will add
-/// 1.0 to the score (0.0 is a perfect match).
-match_distance: u32 = 1000,
-
-/// The number of bits in a usize.
-match_max_bits: u8 = 64,
-
-/// When deleting a large block of text (over ~64 characters), how close
-/// do the contents have to be to match the expected contents. (0.0 =
-/// perfection, 1.0 = very loose).  Note that Match_Threshold controls
-/// how closely the end points of a delete need to match.
-patch_delete_threshold: f32 = 0.5,
-
-/// Chunk size for context length.
-patch_margin: u8 = 4,
 
 pub const DiffError = error{OutOfMemory};
 
@@ -2079,9 +2083,6 @@ fn makePatchInternal(
     diffs: DiffList,
     diff_act: DiffHandling,
 ) !PatchList {
-    // TODO maybe add a .own and .borrow enum, sometimes the diffs will be
-    // created internally and we can just move them?  That would be an internal
-    // function, public `makePatch` would use .own
     const patches = PatchList{};
     if (diffs.items.len == 0) {
         return patches; // Empty diff means empty patchlist
@@ -2124,7 +2125,8 @@ fn makePatchInternal(
                 //
                 if (a_diff.text.len <= 2 * @This().patch_margin and patch.diffs.items.len != 0 and a_diff != diffs.items[diffs.items.len]) {
                     // Small equality inside a patch.
-                    try patch.diffs.append(allocator, try a_diff.clone(allocator));
+                    const d = if (diff_act == .copy) a_diff.clone(allocator) else a_diff;
+                    try patch.diffs.append(allocator, d);
                     patch.length1 += a_diff.text.len;
                     patch.length2 += a_diff.text.len;
                 }
