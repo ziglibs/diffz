@@ -1796,6 +1796,77 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
     return levenshtein + @max(inserts, deletes);
 }
 
+//|  PATCH FUNCTIONS
+
+///
+/// Increase the context until it is unique, but don't let the pattern
+/// expand beyond DiffMatchPatch.match_max_bits.
+///
+/// @param patch The patch to grow.
+/// @param text Source text.
+fn patchAddContext(allocator: Allocator, patch: *Patch, text: []const u8) !void {
+    //
+    if (text.len == 0) return;
+    var pattern = text[patch.start2 .. patch.start2 + patch.length1];
+    var padding = 0;
+    if (false) { // XXX
+        pattern = "";
+        padding = 0;
+    }
+    while (std.mem.indexOf(u8, text, pattern) != std.mem.lastIndexOf(u8, text, pattern) and pattern.len < @This().match_max_bits - (2 * @This().patch_margin)) {
+        //
+        padding += @This().patch_margin;
+        const pat_start = @max(0, patch.start2 - padding);
+        const pat_end = pat_start + @min(text.len, patch.start2 + patch.length1 + padding);
+        pattern = text[pat_start..pat_end];
+    }
+    // Add one chunk for good luck.
+    padding += @This().patch_margin;
+    // Add the prefix.
+    const prefix = pre: {
+        const pre_start = @max(0, patch.start2 - padding);
+        const pre_end = pre_start + patch.start2;
+        break :pre text[pre_start..pre_end];
+    };
+    if (prefix.len != 0) {
+        try patch.diffs.append(
+            allocator,
+            Diff{
+                .operation = .equal,
+                .text = try allocator.dupe(u8, prefix),
+            },
+        );
+    }
+    // Add the suffix.
+    const suffix = post: {
+        const post_start = patch.start2 + patch.length1;
+        const post_end = post_start + @min(text.len, patch.start2 + patch.length1 + padding);
+        break :post text[post_start..post_end];
+    };
+    if (suffix.len != 0) {
+        try patch.diffs.append(
+            allocator,
+            Diff{
+                .operation = .equal,
+                .text = try allocator.dupe(u8, suffix),
+            },
+        );
+    }
+    // Roll back the start points.
+    patch.start1 -= prefix.len;
+    patch.start2 -= prefix.len;
+    // Extend the lengths.
+    patch.length1 += prefix.len + suffix.len;
+    patch.length2 += prefix.len + suffix.len;
+}
+
+///
+/// Compute a list of patches to turn text1 into text2.
+/// text2 is not provided, diffs are the delta between text1 and text2.
+///
+/// @param text1 Old text.
+/// @param diffs Array of Diff objects for text1 to text2.
+/// @return List of Patch objects.
 pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !PatchList {
     // TODO maybe add a .own and .borrow enum, sometimes the diffs will be
     // created internally and we can just move them?  That would be an internal
@@ -1847,7 +1918,7 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
                 if (a_diff.text.len >= 2 * @This().patch_margin) {
                     // Time for a new patch.
                     if (patch.diffs.items.len != 0) {
-                        // patchAddContext(patch, prepatch_text);
+                        try patchAddContext(allocator, patch, prepatch_text);
                         try patches.append(allocator, patch);
                         patch = Patch{};
                         // Unlike Unidiff, our patch lists have a rolling context.
@@ -1877,7 +1948,7 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
 
     // Pick up the leftover patch if not empty.
     if (patch.diffs.items.len != 0) {
-        // patchAddContext(patch, prepatch_text);
+        try patchAddContext(allocator, patch, prepatch_text);
         try patches.append(allocator, patch);
     }
 }
