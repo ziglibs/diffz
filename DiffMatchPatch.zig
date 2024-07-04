@@ -1742,11 +1742,24 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
 /// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig
 /// under the MIT license. Thanks!
 ///
-/// URI encode every byte except the unreserved characters:
-///   'A'-'Z', 'a'-'z', '0'-'9', '-', '.', '_', ' ', and '~'.
-///
-/// The space character is not a reserved character in the Unidiff format:
+/// Modified to implement Unidiff escaping, documented here:
 /// https://github.com/google/diff-match-patch/wiki/Unidiff
+///
+/// The documentation reads:
+///
+/// > Special characters are encoded using %xx notation. The set of
+/// > characters which are encoded matches JavaScript's `encodeURI()`
+/// > function, with the exception of spaces which are not encoded.
+///
+/// So we encode everything but the characters defined by Moz:
+/// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURI
+///
+/// These:  !#$&'()*+,-./:;=?@_~
+///
+/// There is a nice contiguous run of 10 symbols between `&` and `/`, which we
+/// can test in two comparisons, leaving these assorted:
+///
+///     !#$:;=?@_~
 ///
 /// Each URI encoded byte is formed by a '%' and the two-digit
 /// hexadecimal value of the byte.
@@ -1754,15 +1767,18 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
 /// Letters in the hexadecimal value must be uppercase, for example "%1A".
 ///
 fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    const unreserved_marks = " -_.!~*'()";
+    const remaining_characters = "!#$:;=?@_~";
     var encoded = try std.ArrayList(u8).initCapacity(allocator, text.len);
     defer encoded.deinit();
     for (text) |c| {
         const should_encode = should: {
-            if (std.ascii.isAlphanumeric(c)) {
+            if (c == ' ' or std.ascii.isAlphanumeric(c)) {
                 break :should false;
             }
-            for (unreserved_marks) |r| {
+            if ('&' <= c and c <= '/') {
+                break :should false;
+            }
+            for (remaining_characters) |r| {
                 if (r == c) {
                     break :should false;
                 }
