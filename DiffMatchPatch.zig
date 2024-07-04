@@ -6,6 +6,7 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
+const PatchList = ArrayListUnmanaged(Patch);
 
 /// Deinit an `ArrayListUnmanaged(Diff)` and the allocated slices of
 /// text in each `Diff`.
@@ -65,17 +66,24 @@ pub const Diff = struct {
     pub fn eql(a: Diff, b: Diff) bool {
         return a.operation == b.operation and std.mem.eql(u8, a.text, b.text);
     }
+
+    pub fn clone(self: Diff, allocator: Allocator) !Diff {
+        return Diff{
+            .operation = self.operation,
+            .text = try allocator.dupe(u8, self.text),
+        };
+    }
 };
 
 pub const Patch = struct {
     /// Diffs to be applied
     diffs: DiffList, // TODO This should be a Diff
     /// Start of patch in before text
-    start1: usize,
-    length1: usize,
+    start1: usize = 0,
+    length1: usize = 0,
     /// Start of patch in after text
-    start2: usize,
-    length2: usize,
+    start2: usize = 0,
+    length2: usize = 0,
 
     pub fn toString(self: Patch) ![]const u8 {
         // TODO
@@ -1438,7 +1446,7 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
 }
 
 /// Reduce the number of edits by eliminating operationally trivial
-/// equalities.
+/// equalities.  TODO this needs tests
 pub fn diffCleanupEfficiency(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -1648,6 +1656,9 @@ pub fn diffIndex(diffs: DiffList, loc: usize) usize {
 ///
 /// May include a function taking an allocator and the diff,
 /// which shall return the text of the diff, appropriately munged.
+/// Note that if the function is provided, all text returned will
+/// be freed, so it should always return a copy whether or not
+/// edits are needed.
 pub const DiffDecorations = struct {
     delete_start: []const u8 = "",
     delete_end: []const u8 = "",
@@ -1681,7 +1692,7 @@ pub fn diffPrettyFormat(
     return out.toOwnedSlice(allocator);
 }
 
-/// Write a pretty-formatted `DiffList` to `writer`.  The allocator
+/// Write a pretty-formatted `DiffList` to `writer`.  The `Allocator`
 /// is only used if a custom text formatter is defined for
 /// `DiffDecorations`.  Returns number of bytes written.
 pub fn writeDiffPrettyFormat(
@@ -1724,7 +1735,7 @@ pub fn writeDiffPrettyFormat(
 
 ///
 /// Compute and return the source text (all equalities and deletions).
-/// @param diffs List of Diff objects.
+/// @param diffs List of `Diff` objects.
 /// @return Source text.
 ///
 pub fn diffBeforeText(allocator: Allocator, diffs: DiffList) ![]const u8 {
@@ -1740,7 +1751,7 @@ pub fn diffBeforeText(allocator: Allocator, diffs: DiffList) ![]const u8 {
 
 ///
 /// Compute and return the destination text (all equalities and insertions).
-/// @param diffs List of Diff objects.
+/// @param diffs List of `Diff` objects.
 /// @return Destination text.
 ///
 pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
@@ -1783,6 +1794,92 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
     }
 
     return levenshtein + @max(inserts, deletes);
+}
+
+pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !PatchList {
+    // TODO maybe add a .own and .borrow enum, sometimes the diffs will be
+    // created internally and we can just move them?  That would be an internal
+    // function, public `makePatch` would use .own
+    const patches = PatchList{};
+    if (diffs.items.len == 0) {
+        return patches; // Empty diff means empty patchlist
+    }
+
+    var patch = Patch{};
+    var char_count1 = 0;
+    var char_count2 = 0;
+
+    // This avoids freeing the original copy of the text:
+    var first_patch = true;
+    var prepatch_text = text;
+    defer {
+        if (!first_patch)
+            allocator.free(prepatch_text);
+    }
+    var postpatch = try std.ArrayList(u8).initCapacity(allocator, text.len);
+    defer postpatch.deinit();
+    try postpatch.appendSlice(text);
+    for (diffs) |a_diff| {
+        if (patch.diffs.items.len == 0 and a_diff.operation != .equal) {
+            patch.start1 = char_count1;
+            patch.start2 = char_count2;
+        }
+        switch (a_diff.operation) {
+            .insert => {
+                try patch.diffs.append(allocator, a_diff.clone(allocator));
+                patch.length2 += a_diff.text.len;
+                try postpatch.insertSlice(char_count2, a_diff.text);
+            },
+            .delete => {
+                //
+                try patch.diffs.append(allocator, a_diff.clone(allocator));
+                patch.length1 += a_diff.text.len;
+                try postpatch.replaceRange(char_count2, a_diff.text.len, .{});
+            },
+            .equal => {
+                //
+                if (a_diff.text.len <= 2 * @This().patch_margin and patch.diffs.items.len != 0 and a_diff != diffs.items[diffs.items.len]) {
+                    // Small equality inside a patch.
+                    try patch.diffs.append(allocator, try a_diff.clone(allocator));
+                    patch.length1 += a_diff.text.len;
+                    patch.length2 += a_diff.text.len;
+                }
+                if (a_diff.text.len >= 2 * @This().patch_margin) {
+                    // Time for a new patch.
+                    if (patch.diffs.items.len != 0) {
+                        // patchAddContext(patch, prepatch_text);
+                        try patches.append(allocator, patch);
+                        patch = Patch{};
+                        // Unlike Unidiff, our patch lists have a rolling context.
+                        // https://github.com/google/diff-match-patch/wiki/Unidiff
+                        // Update prepatch text & pos to reflect the application of the
+                        // just completed patch.
+                        if (first_patch) {
+                            // no free on first
+                            first_patch = false;
+                        } else {
+                            allocator.free(prepatch_text);
+                        }
+                        prepatch_text = try allocator.dupe(u8, postpatch.items);
+                        char_count1 = char_count2;
+                    }
+                }
+            },
+        }
+        // Update the current character count.
+        if (a_diff.operation != .insert) {
+            char_count1 += a_diff.text.len;
+        }
+        if (a_diff.operation != .remove) {
+            char_count2 += a_diff.text.len;
+        }
+    } // end for loop
+
+    // Pick up the leftover patch if not empty.
+    if (patch.diffs.items.len != 0) {
+        // patchAddContext(patch, prepatch_text);
+        try patches.append(allocator, patch);
+    }
 }
 
 /// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig
