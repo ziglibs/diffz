@@ -15,5 +15,6 @@
     - [ ] Imara diff has an optimized histogram:
           https://github.com/pascalkuthe/imara-diff
 - [ ] POSIX-diff compatible patch output?
+- [ ] Delta functions?  They aren't used internally.
 
 Covers the bases.

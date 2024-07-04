@@ -18,6 +18,8 @@ pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
     }
 }
 
+/// Free a range of Diffs inside a list.  Used during cleanups and
+/// edits.
 fn freeRangeDiffList(
     allocator: Allocator,
     diffs: *DiffList,
@@ -34,6 +36,8 @@ fn freeRangeDiffList(
 /// DMP with default configuration options
 pub const default = DiffMatchPatch{};
 
+/// Represents a single edit operation.
+/// TODO rename this Edit
 pub const Diff = struct {
     pub const Operation = enum {
         insert,
@@ -60,6 +64,27 @@ pub const Diff = struct {
     }
     pub fn eql(a: Diff, b: Diff) bool {
         return a.operation == b.operation and std.mem.eql(u8, a.text, b.text);
+    }
+};
+
+pub const Patch = struct {
+    /// Diffs to be applied
+    diffs: DiffList, // TODO This should be a Diff
+    /// Start of patch in before text
+    start1: usize,
+    length1: usize,
+    /// Start of patch in after text
+    start2: usize,
+    length2: usize,
+
+    pub fn toString(self: Patch) ![]const u8 {
+        // TODO
+        _ = self;
+    }
+
+    pub fn writeTo(writer: anytype) !usize {
+        // TODO
+        _ = writer;
     }
 };
 
