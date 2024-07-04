@@ -1575,6 +1575,82 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     return best_idx;
 }
 
+/// loc is a location in text1, compute and return the equivalent location in
+/// text2.
+/// e.g. "The cat" vs "The big cat", 1->1, 5->8
+/// @param diffs List of Diff objects.
+/// @param loc Location within text1.
+/// @return Location within text2.
+///
+pub fn diffIndex(diffs: DiffList, loc: usize) usize {
+    //      int chars1 = 0;
+    //      int chars2 = 0;
+    //      int last_chars1 = 0;
+    //      int last_chars2 = 0;
+    var chars1: usize = 0;
+    var chars2: usize = 0;
+    var last_chars1: usize = 0;
+    var last_chars2: usize = 0;
+    //  Dummy diff
+    var last_diff: Diff = Diff{ .operation = .equal, .text = "" };
+    for (diffs) |a_diff| {
+        if (a_diff.operation != .insert) {
+            // Equality or deletion.
+            chars1 += a_diff.text.len;
+        }
+        if (a_diff.operation != .delete) {
+            // Equality or insertion.
+            chars2 += a_diff.text.len;
+        }
+        if (chars1 > loc) {
+            // Overshot the location.
+            last_diff = a_diff;
+            break;
+        }
+    }
+    last_chars1 = chars1;
+    last_chars2 = chars2;
+
+    if (last_diff.text.len != 0 and last_diff.operation == .delete) {
+        // The location was deleted.
+        return last_chars2;
+    }
+    // Add the remaining character length.
+    return last_chars2 + (loc - last_chars1);
+}
+
+///
+/// Compute and return the source text (all equalities and deletions).
+/// @param diffs List of Diff objects.
+/// @return Source text.
+///
+pub fn diffBeforeText(allocator: Allocator, diffs: DiffList) ![]const u8 {
+    var chars = ArrayListUnmanaged(u8){};
+    defer chars.deinit(allocator);
+    for (diffs) |d| {
+        if (d.operation != .insert) {
+            try chars.appendSlice(allocator, d.text);
+        }
+    }
+    return chars.toOwnedSlice(allocator);
+}
+
+///
+/// Compute and return the destination text (all equalities and insertions).
+/// @param diffs List of Diff objects.
+/// @return Destination text.
+///
+pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
+    var chars = ArrayListUnmanaged(u8){};
+    defer chars.deinit(allocator);
+    for (diffs) |d| {
+        if (d.operation != .delete) {
+            try chars.appendSlice(allocator, d.text);
+        }
+    }
+    return chars.toOwnedSlice(allocator);
+}
+
 // DONE [✅]: Allocate all text in diffs to
 // not cause segfault while freeing; not a problem
 // at the moment because we don't free anything :(
