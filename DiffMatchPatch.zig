@@ -1619,6 +1619,63 @@ pub fn diffIndex(diffs: DiffList, loc: usize) usize {
     return last_chars2 + (loc - last_chars1);
 }
 
+/// A struct holding bookends for `diffPrittyFormat(diffs)`.
+///
+/// May include a function taking an allocator and the diff,
+/// which shall return the text of the diff, appropriately munged.
+pub const DiffDecorations = struct {
+    delete_start: []const u8 = "",
+    delete_end: []const u8 = "",
+    insert_start: []const u8 = "",
+    insert_end: []const u8 = "",
+    equals_start: []const u8 = "",
+    equals_end: []const u8 = "",
+    pre_process: ?fn (Allocator, Diff) error{OutOfMemory}![]const u8 = null,
+};
+
+/// Decorations for classic Xterm printing: red for delete and
+/// green for insert.
+pub const xterm_classic = DiffDecorations{
+    .delete_start = "\x1b[91m",
+    .delete_end = "\x1b[m",
+    .insert_start = "\x1b[92m",
+    .insert_end = "\x1b[m",
+};
+
+pub fn diffPrettyFormat(
+    allocator: Allocator,
+    diffs: DiffList,
+    deco: DiffDecorations,
+) ![]const u8 {
+    var out = ArrayListUnmanaged(u8){};
+    defer out.deinit(allocator);
+    for (diffs) |d| {
+        const text = if (deco.pre_process) |lambda|
+            try lambda(allocator, d)
+        else
+            d.text;
+        switch (d.operation) {
+            .delete => {
+                //
+                try out.appendSlice(allocator, deco.delete_start);
+                try out.appendSlice(allocator, text);
+                try out.appendSlice(allocator, deco.delete_end);
+            },
+            .insert => {
+                try out.appendSlice(allocator, deco.insert_start);
+                try out.appendSlice(allocator, text);
+                try out.appendSlice(allocator, deco.insert_end);
+            },
+            .equals => {
+                try out.appendSlice(allocator, deco.equals_start);
+                try out.appendSlice(allocator, text);
+                try out.appendSlice(allocator, deco.equals_end);
+            },
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 ///
 /// Compute and return the source text (all equalities and deletions).
 /// @param diffs List of Diff objects.
@@ -1649,6 +1706,35 @@ pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
         }
     }
     return chars.toOwnedSlice(allocator);
+}
+
+///
+/// Compute the Levenshtein distance; the number of inserted, deleted or
+/// substituted characters.
+/// @param diffs List of Diff objects.
+/// @return Number of changes.
+///
+pub fn diffLevenshtein(diffs: DiffList) usize {
+    var inserts: usize = 0;
+    var deletes: usize = 0;
+    var levenshtein: usize = 0;
+    for (diffs) |d| {
+        switch (d.operation) {
+            .insert => {
+                inserts += d.text.len;
+            },
+            .delete => {
+                deletes += d.text.len;
+            },
+            .equal => {
+                // A deletion and an insertion is one substitution.
+                levenshtein = @max(inserts, deletes);
+                inserts = 0;
+                deletes = 0;
+            },
+        }
+    }
+    return levenshtein + @max(inserts, deletes);
 }
 
 // DONE [✅]: Allocate all text in diffs to
