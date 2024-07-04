@@ -85,14 +85,34 @@ pub const Patch = struct {
     start2: usize = 0,
     length2: usize = 0,
 
-    pub fn toString(self: Patch) ![]const u8 {
+    pub fn toString(patch: Patch) ![]const u8 {
         // TODO
-        _ = self;
+        _ = patch;
     }
 
     pub fn writeTo(writer: anytype) !usize {
         // TODO
         _ = writer;
+    }
+
+    /// Make a clone of the Patch, including all Diffs.
+    pub fn clone(patch: Patch, allocator: Allocator) !Patch {
+        var new_diffs = DiffList{};
+        new_diffs.initCapacity(allocator, patch.diffs.items.len);
+        for (patch.diffs) |a_diff| {
+            try new_diffs.append(try a_diff.clone(allocator));
+        }
+        return Patch{
+            .diffs = new_diffs,
+            .start1 = patch.start1,
+            .length1 = patch.length1,
+            .start2 = patch.start2,
+            .length2 = patch.length2,
+        };
+    }
+
+    pub fn deinit(patch: *Patch, allocator: Allocator) void {
+        deinitDiffList(allocator, patch.diffs);
     }
 };
 
@@ -1983,6 +2003,22 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
     try makePatchInternal(allocator, text, diffs, .copy);
 }
 
+// TODO other makePatch methods...
+
+///
+/// Given an array of patches, return another array that is identical.
+/// @param patches Array of Patch objects.
+/// @return Array of Patch objects.
+fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
+    var new_patches = PatchList{};
+    new_patches.initCapacity(allocator, patches.items.len);
+    for (patches) |patch| {
+        try new_patches.append(allocator, try patch.clone(allocator));
+    }
+    return new_patches;
+}
+
+///
 /// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig
 /// under the MIT license. Thanks!
 ///
