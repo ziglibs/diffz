@@ -2006,26 +2006,29 @@ fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usi
 /// @param patch The patch to grow.
 /// @param text Source text.
 fn patchAddContext(allocator: Allocator, patch: *Patch, text: []const u8) !void {
-    //
     if (text.len == 0) return;
-    var pattern = text[patch.start2 .. patch.start2 + patch.length1];
+    // TODO the fixup logic here might make patterns too large?
     var padding = 0;
-    if (false) { // XXX
-        pattern = "";
-        padding = 0;
-    }
-    while (std.mem.indexOf(u8, text, pattern) != std.mem.lastIndexOf(u8, text, pattern) and pattern.len < @This().match_max_bits - (2 * @This().patch_margin)) {
-        //
-        padding += @This().patch_margin;
-        const pat_start = @max(0, patch.start2 - padding);
-        const pat_end = pat_start + @min(text.len, patch.start2 + patch.length1 + padding);
-        pattern = text[pat_start..pat_end];
+    { // Grow the pattern around the patch until unique, to set padding amount.
+        var pattern = text[patch.start2 .. patch.start2 + patch.length1];
+        const max_width: usize = @This().match_max_bits - (2 * @This().patch_margin);
+        while (std.mem.indexOf(u8, text, pattern) != std.mem.lastIndexOf(u8, text, pattern) and pattern.len < max_width) {
+            padding += @This().patch_margin;
+            const pat_start = @max(0, patch.start2 - padding);
+            const pat_end = pat_start + @min(text.len, patch.start2 + patch.length1 + padding);
+            pattern = text[pat_start..pat_end];
+        }
     }
     // Add one chunk for good luck.
     padding += @This().patch_margin;
     // Add the prefix.
     const prefix = pre: {
-        const pre_start = @max(0, patch.start2 - padding);
+        var pre_start = @max(0, patch.start2 - padding);
+        // Make sure we're not breaking a codepoint.
+        while (is_follow(text[pre_start]) and pre_start > 0) {
+            pre_start -= 1;
+        } // Assuming we did everything else right, pre_end should be
+        // properly placed.
         const pre_end = pre_start + patch.start2;
         break :pre text[pre_start..pre_end];
     };
@@ -2041,7 +2044,18 @@ fn patchAddContext(allocator: Allocator, patch: *Patch, text: []const u8) !void 
     // Add the suffix.
     const suffix = post: {
         const post_start = patch.start2 + patch.length1;
-        const post_end = post_start + @min(text.len, patch.start2 + patch.length1 + padding);
+        // In case we messed up somewhere:
+        assert(!is_follow(text[post_start]));
+        var post_end = post_start + @min(text.len, patch.start2 + patch.length1 + padding);
+        // Prevent broken codepoints here as well: Lead bytes, or follow with another follow
+        while (!std.ascii.isASCII(text[post_end]) and post_end + 1 < text.len and is_follow(text[post_end + 1])) {
+            post_end += 1;
+            // Special case: penultimate with another follow at end
+            if (post_end + 2 == text.len and is_follow(text[post_end + 1])) {
+                post_end += 1;
+                break; // Not actually necessary, but polite.
+            }
+        }
         break :post text[post_start..post_end];
     };
     if (suffix.len != 0) {
