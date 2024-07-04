@@ -1792,13 +1792,8 @@ fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
         }
         // Whatever remains, encode it
         try encoded.append('%');
-        const hex = try std.fmt.allocPrint(
-            allocator,
-            "{s}",
-            .{std.fmt.fmtSliceHexUpper(&[_]u8{c})},
-        );
-        defer allocator.free(hex);
-        try encoded.appendSlice(hex);
+        const hexen = std.fmt.bytesToHex(&[_]u8{c}, .upper);
+        try encoded.appendSlice(&hexen);
     }
     return encoded.toOwnedSlice();
 }
