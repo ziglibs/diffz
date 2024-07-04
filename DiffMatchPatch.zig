@@ -1642,6 +1642,8 @@ pub const xterm_classic = DiffDecorations{
     .insert_end = "\x1b[m",
 };
 
+/// Return text representing a pretty-formatted `DiffList`.
+/// See `DiffDecorations` for how to customize this output.
 pub fn diffPrettyFormat(
     allocator: Allocator,
     diffs: DiffList,
@@ -1649,31 +1651,50 @@ pub fn diffPrettyFormat(
 ) ![]const u8 {
     var out = ArrayListUnmanaged(u8){};
     defer out.deinit(allocator);
+    const writer = out.writer();
+    _ = try writeDiffPrettyFormat(allocator, writer, diffs, deco);
+    return out.toOwnedSlice(allocator);
+}
+
+/// Write a pretty-formatted `DiffList` to `writer`.  The allocator
+/// is only used if a custom text formatter is defined for
+/// `DiffDecorations`.  Returns number of bytes written.
+pub fn writeDiffPrettyFormat(
+    allocator: Allocator,
+    writer: anytype,
+    diffs: DiffList,
+    deco: DiffDecorations,
+) !usize {
+    var written: usize = 0;
     for (diffs) |d| {
         const text = if (deco.pre_process) |lambda|
             try lambda(allocator, d)
         else
             d.text;
+        defer {
+            if (deco.pre_process) |_|
+                allocator.free(text);
+        }
         switch (d.operation) {
             .delete => {
                 //
-                try out.appendSlice(allocator, deco.delete_start);
-                try out.appendSlice(allocator, text);
-                try out.appendSlice(allocator, deco.delete_end);
+                written += try writer.write(deco.delete_start);
+                written += try writer.write(text);
+                written += try writer.write(deco.delete_end);
             },
             .insert => {
-                try out.appendSlice(allocator, deco.insert_start);
-                try out.appendSlice(allocator, text);
-                try out.appendSlice(allocator, deco.insert_end);
+                written += try writer.write(deco.insert_start);
+                written += try writer.write(text);
+                written += try writer.write(deco.insert_end);
             },
             .equals => {
-                try out.appendSlice(allocator, deco.equals_start);
-                try out.appendSlice(allocator, text);
-                try out.appendSlice(allocator, deco.equals_end);
+                written += try writer.write(deco.equals_start);
+                written += try writer.write(text);
+                written += try writer.write(deco.equals_end);
             },
         }
     }
-    return out.toOwnedSlice(allocator);
+    return written;
 }
 
 ///
