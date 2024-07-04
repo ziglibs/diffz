@@ -32,4 +32,19 @@ pub fn build(b: *std.Build) void {
     const step_tests = b.addRunArtifact(tests);
 
     b.step("test", "Run diffz tests").dependOn(&step_tests.step);
+
+    // Adds a step to generate code coverage
+    const cov_step = b.step("cov", "Generate coverage (kcov must be installed)");
+
+    const cov_run = b.addSystemCommand(&.{
+        "kcov",
+        "--clean",
+        "--include-pattern=DiffMatchPatch.zig",
+        "--exclude-line=unreachable,expect(false)",
+        "kcov-output",
+    });
+    cov_run.addArtifactArg(tests);
+    cov_step.dependOn(&cov_run.step);
+    _ = cov_run.captureStdOut();
+    _ = cov_run.captureStdErr();
 }
