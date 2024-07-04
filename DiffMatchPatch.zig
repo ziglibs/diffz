@@ -1860,14 +1860,28 @@ fn patchAddContext(allocator: Allocator, patch: *Patch, text: []const u8) !void 
     patch.length2 += prefix.len + suffix.len;
 }
 
+/// Determines how to handle Diffs in a patch.  Functions which create
+/// the diffs internally can use `.own`: the Diffs will be copied to
+/// the patch list, new ones allocated, and old ones freed.  Then call
+/// `deinit` on the DiffList, but not `deinitDiffList`.  This *must not*
+/// be used if the DiffList is not immediately freed, because some of
+/// the diffs will contain spuriously empty text.
 ///
-/// Compute a list of patches to turn text1 into text2.
-/// text2 is not provided, diffs are the delta between text1 and text2.
-///
-/// @param text1 Old text.
-/// @param diffs Array of Diff objects for text1 to text2.
+/// Functions which operate on an existing DiffList should use `.copy`:
+/// as the name indicates, copies of the Diffs will be made, and the
+/// original memory must be freed separately.
+const DiffHandling = enum {
+    copy,
+    own,
+};
+
 /// @return List of Patch objects.
-pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !PatchList {
+fn makePatchInternal(
+    allocator: Allocator,
+    text: []const u8,
+    diffs: DiffList,
+    diff_act: DiffHandling,
+) !PatchList {
     // TODO maybe add a .own and .borrow enum, sometimes the diffs will be
     // created internally and we can just move them?  That would be an internal
     // function, public `makePatch` would use .own
@@ -1897,13 +1911,15 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
         }
         switch (a_diff.operation) {
             .insert => {
-                try patch.diffs.append(allocator, a_diff.clone(allocator));
+                const d = if (diff_act == .copy) a_diff.clone(allocator) else a_diff;
+                try patch.diffs.append(allocator, d);
                 patch.length2 += a_diff.text.len;
                 try postpatch.insertSlice(char_count2, a_diff.text);
             },
             .delete => {
                 //
-                try patch.diffs.append(allocator, a_diff.clone(allocator));
+                const d = if (diff_act == .copy) a_diff.clone(allocator) else a_diff;
+                try patch.diffs.append(allocator, d);
                 patch.length1 += a_diff.text.len;
                 try postpatch.replaceRange(char_count2, a_diff.text.len, .{});
             },
@@ -1918,6 +1934,10 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
                 if (a_diff.text.len >= 2 * @This().patch_margin) {
                     // Time for a new patch.
                     if (patch.diffs.items.len != 0) {
+                        // free the Diff if we own it
+                        if (diff_act == .own) {
+                            allocator.free(a_diff.text);
+                        }
                         try patchAddContext(allocator, patch, prepatch_text);
                         try patches.append(allocator, patch);
                         patch = Patch{};
@@ -1951,6 +1971,16 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
         try patchAddContext(allocator, patch, prepatch_text);
         try patches.append(allocator, patch);
     }
+}
+
+///
+/// Compute a list of patches to turn text1 into text2.
+/// text2 is not provided, diffs are the delta between text1 and text2.
+///
+/// @param text1 Old text.
+/// @param diffs Array of Diff objects for text1 to text2.
+pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !PatchList {
+    try makePatchInternal(allocator, text, diffs, .copy);
 }
 
 /// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig
