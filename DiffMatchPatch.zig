@@ -1803,6 +1803,22 @@ fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return encoded.toOwnedSlice();
 }
 
+test encodeUri {
+    const allocator = std.testing.allocator;
+    const special_chars = "!#$&'()*+,-./:;=?@_~";
+    const special_encoded = try encodeUri(allocator, special_chars);
+    defer allocator.free(special_encoded);
+    try testing.expectEqualStrings(special_chars, special_encoded);
+    const alphaspace = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const alpha_encoded = try encodeUri(allocator, alphaspace);
+    defer allocator.free(alpha_encoded);
+    try testing.expectEqualStrings(alphaspace, alpha_encoded);
+    const to_encode = "\"%<>[\\]^`{|}δ";
+    const encodes = try encodeUri(allocator, to_encode);
+    defer allocator.free(encodes);
+    try testing.expectEqualStrings("%22%25%3C%3E%5B%5C%5D%5E%60%7B%7C%7D%CE%B4", encodes);
+}
+
 // DONE [✅]: Allocate all text in diffs to
 // not cause segfault while freeing; not a problem
 // at the moment because we don't free anything :(
