@@ -346,7 +346,7 @@ fn diffHalfMatch(
     before: []const u8,
     after: []const u8,
 ) DiffError!?HalfMatchResult {
-    if (dmp.diff_timeout <= 0) {
+    if (dmp.diff_timeout == 0) {
         // Don't risk returning a non-optimal diff if we have unlimited time.
         return null;
     }
@@ -624,7 +624,7 @@ fn equalForward(
     if (b1c == a1c) {
         // how many codeunits might we expect?
         // ASCII is easy:
-        if (b1c < 128) {
+        if (b1c < 0x80) {
             return .{ true, 1 };
         } else {
             switch (b1c) {
@@ -681,7 +681,6 @@ fn equalBackward(
     const a1c = after[a_u];
     if (b1c == a1c) {
         // how many codeunits might we expect?
-
         // different jam here! We have to match back to a lead:
         switch (b1c) {
             // follow byte might be a code unit sequence
@@ -1435,7 +1434,7 @@ pub fn diffCleanupEfficiency(
     var post_ins = false;
     // Is there a deletion operation after the last equality.
     var post_del = false;
-    while (pointer < diffs.Count) {
+    while (pointer < diffs.len) {
         if (diffs.items[pointer].operation == .equal) { // Equality found.
             if (diffs.items[pointer].text.len < dmp.diff_edit_cost and (post_ins or post_del)) {
                 // Candidate found.
