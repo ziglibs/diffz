@@ -1766,10 +1766,9 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
 ///
 /// Letters in the hexadecimal value must be uppercase, for example "%1A".
 ///
-fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+fn writeUriEncoded(writer: anytype, text: []const u8) !usize {
     const remaining_characters = "!#$:;=?@_~";
-    var encoded = try std.ArrayList(u8).initCapacity(allocator, text.len);
-    defer encoded.deinit();
+    var written: usize = 0;
     for (text) |c| {
         const should_encode = should: {
             if (c == ' ' or std.ascii.isAlphanumeric(c)) {
@@ -1787,15 +1786,25 @@ fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
         };
 
         if (!should_encode) {
-            try encoded.append(c);
+            try writer.writeByte(c);
+            written += 1;
             continue;
         }
         // Whatever remains, encode it
-        try encoded.append('%');
+        try writer.writeByte('%');
+        written += 1;
         const hexen = std.fmt.bytesToHex(&[_]u8{c}, .upper);
-        try encoded.appendSlice(&hexen);
+        written += try writer.write(&hexen);
     }
-    return encoded.toOwnedSlice();
+    return written;
+}
+
+fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    var charlist = try std.ArrayList(u8).initCapacity(allocator, text.len);
+    defer charlist.deinit();
+    const writer = charlist.writer();
+    _ = try writeUriEncoded(writer, text);
+    return charlist.toOwnedSlice();
 }
 
 test encodeUri {
