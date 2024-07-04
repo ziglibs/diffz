@@ -1709,8 +1709,9 @@ pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
 }
 
 ///
-/// Compute the Levenshtein distance; the number of inserted, deleted or
-/// substituted characters.
+/// Compute the Levenshtein distance; the number of inserted,
+/// deleted or substituted characters.
+///
 /// @param diffs List of Diff objects.
 /// @return Number of changes.
 ///
@@ -1734,7 +1735,56 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
             },
         }
     }
+
     return levenshtein + @max(inserts, deletes);
+}
+
+/// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig
+/// under the MIT license. Thanks!
+///
+/// URI encode every byte except the unreserved characters:
+///   'A'-'Z', 'a'-'z', '0'-'9', '-', '.', '_', ' ', and '~'.
+///
+/// The space character is not a reserved character in the Unidiff format:
+/// https://github.com/google/diff-match-patch/wiki/Unidiff
+///
+/// Each URI encoded byte is formed by a '%' and the two-digit
+/// hexadecimal value of the byte.
+///
+/// Letters in the hexadecimal value must be uppercase, for example "%1A".
+///
+fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    const unreserved_marks = " -_.!~*'()";
+    var encoded = try std.ArrayList(u8).initCapacity(allocator, text.len);
+    defer encoded.deinit();
+    for (text) |c| {
+        const should_encode = should: {
+            if (std.ascii.isAlphanumeric(c)) {
+                break :should false;
+            }
+            for (unreserved_marks) |r| {
+                if (r == c) {
+                    break :should false;
+                }
+            }
+            break :should true;
+        };
+
+        if (!should_encode) {
+            try encoded.append(c);
+            continue;
+        }
+        // Whatever remains, encode it
+        try encoded.append('%');
+        const hex = try std.fmt.allocPrint(
+            allocator,
+            "{s}",
+            .{std.fmt.fmtSliceHexUpper(&[_]u8{c})},
+        );
+        defer allocator.free(hex);
+        try encoded.appendSlice(hex);
+    }
+    return encoded.toOwnedSlice();
 }
 
 // DONE [✅]: Allocate all text in diffs to
