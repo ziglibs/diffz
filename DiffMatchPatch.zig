@@ -122,21 +122,26 @@ diff_timeout: u64 = 1000,
 diff_edit_cost: u16 = 4,
 
 /// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
-match_threshold: f32 = 0.5,
+/// This defaults to 0.05, on the premise that the library will mostly be
+/// used in cases where failure is better than a bad patch application.
+match_threshold: f32 = 0.05,
+
 /// How far to search for a match (0 = exact location, 1000+ = broad match).
 /// A match this many characters away from the expected location will add
 /// 1.0 to the score (0.0 is a perfect match).
 match_distance: u32 = 1000,
-/// The number of bits in an int.
-match_max_bits: u16 = 32,
+
+/// The number of bits in a usize.
+match_max_bits: u8 = 64,
 
 /// When deleting a large block of text (over ~64 characters), how close
 /// do the contents have to be to match the expected contents. (0.0 =
 /// perfection, 1.0 = very loose).  Note that Match_Threshold controls
 /// how closely the end points of a delete need to match.
 patch_delete_threshold: f32 = 0.5,
+
 /// Chunk size for context length.
-patch_margin: u16 = 4,
+patch_margin: u8 = 4,
 
 pub const DiffError = error{OutOfMemory};
 
@@ -1816,6 +1821,178 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
     return levenshtein + @max(inserts, deletes);
 }
 
+//| MATCH FUNCTIONS
+
+/// Locate the best instance of 'pattern' in 'text' near 'loc'.
+/// Returns -1 if no match found.
+/// @param text The text to search.
+/// @param pattern The pattern to search for.
+/// @param loc The location to search around.
+/// @return Best match index or -1.
+pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, passed_loc: usize) ?usize {
+    // Clamp the loc to fit within text.
+    const loc = @min(passed_loc, text.len);
+    if (std.mem.eql(u8, text, pattern)) {
+        // Shortcut (potentially not guaranteed by the algorithm)
+        // TODO would be good to know what the above means...
+        return 0;
+    } else if (text.len == 0) {
+        // Nothing to match.
+        return null;
+    } else if (loc + pattern.len <= text.len and std.mem.eql(u8, text[loc..pattern.length], pattern)) {
+        // Perfect match at the perfect spot!  (Includes case of null pattern)
+        return loc;
+    } else {
+        // Do a fuzzy compare.
+        // return match_bitap(allocator, text, pattern, loc);
+    }
+    _ = allocator;
+}
+
+/// Locate the best instance of 'pattern' in 'text' near 'loc' using the
+/// Bitap algorithm.  Returns -1 if no match found.
+/// @param text The text to search.
+/// @param pattern The pattern to search for.
+/// @param loc The location to search around.
+/// @return Best match index or -1.
+fn matchBitap(
+    allocator: Allocator,
+    text: []const u8,
+    pattern: []const u8,
+    loc: usize,
+) ?usize {
+    // TODO decide what to do here:
+    // assert (Match_MaxBits == 0 || pattern.Length <= Match_MaxBits)
+    //    : "Pattern too long for this application.";
+    // Initialise the alphabet.
+    var map = try matchAlphabet(allocator, pattern);
+    defer map.deinit();
+    // Highest score beyond which we give up.
+    var threshold = @This().threshold;
+    // Is there a nearby exact match? (speedup)
+    var best_loc = std.mem.indexOfPos(u8, text, pattern);
+    if (best_loc) |best| {
+        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+    }
+    // What about in the other direction? (speedup)
+    const trunc_text = text[0..@min(loc + pattern.len, text.len)];
+    best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
+    if (best_loc) |best| {
+        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+    }
+    // Initialise the bit arrays.
+    const shift: u6 = @intCast(pattern.len - 1);
+    const matchmask = 1 << shift;
+    best_loc = null;
+    var bin_min: usize = undefined;
+    var bin_mid: usize = undefined;
+    var bin_max = pattern.len + text.len;
+    // null last_rd to simplying freeing memory
+    var last_rd: []usize = try allocator.alloct(usize, 0);
+    for (0..pattern.len) |d| {
+        // Scan for the best match; each iteration allows for one more error.
+        // Run a binary search to determine how far from 'loc' we can stray at
+        // this error level.
+        bin_min = 0;
+        bin_mid = bin_max;
+        while (bin_min < bin_mid) {
+            if (matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
+                bin_min = bin_mid;
+            } else {
+                bin_max = bin_mid;
+            }
+            bin_mid = (bin_max - bin_min) / 2 + bin_min;
+        }
+        // Use the result from this iteration as the maximum for the next.
+        bin_max = bin_mid;
+        var start = @max(1, loc - bin_mid + 1);
+        const finish = @min(loc + bin_mid, text.len) + pattern.len;
+        var rd: []usize = allocator.alloc(usize, finish + 2);
+        const dshift: u6 = @intCast(d);
+        rd[finish + 1] = (1 << dshift) - 1;
+        var j = finish;
+        while (j >= start) : (j -= 1) {
+            const char_match: usize = if (text.len <= j - 1 or !map.contains(text[j - 1]))
+                // Out of range.
+                0
+            else
+                map.get(text[j - 1]);
+            if (d == 0) {
+                // First pass: exact match.
+                rd[j] = ((rd[j + 1] << 1) | 1) & char_match;
+            } else {
+                // Subsequent passes: fuzzy match.
+                rd[j] = ((rd[j + 1] << 1) | 1) & char_match | (((last_rd[j + 1] | last_rd[j]) << 1) | 1) | last_rd[j + 1];
+            }
+            if ((rd[j] & matchmask) != 0) {
+                const score = matchBitapScore(d, j - 1, loc, pattern);
+                // This match will almost certainly be better than any existing
+                // match.  But check anyway.
+                if (score <= threshold) {
+                    // Told you so.
+                    threshold = score;
+                    best_loc = j - 1;
+                    if (best_loc > loc) {
+                        // When passing loc, don't exceed our current distance from loc.
+                        start = @max(1, 2 * loc - best_loc);
+                    } else {
+                        // Already passed loc, downhill from here on in.
+                        break;
+                    }
+                }
+            }
+        }
+        if (matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
+            // No hope for a (better) match at greater error levels.
+            break;
+        }
+        allocator.free(last_rd);
+        last_rd = rd;
+    }
+    allocator.free(last_rd);
+    return best_loc;
+}
+
+/// Compute and return the score for a match with e errors and x location.
+/// @param e Number of errors in match.
+/// @param x Location of match.
+/// @param loc Expected location of match.
+/// @param pattern Pattern being sought.
+/// @return Overall score for match (0.0 = good, 1.0 = bad).
+fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
+    const e_float: f32 = @floatFromInt(e);
+    const len_float: f32 = @floatFromInt(pattern.len);
+    const accuracy = e_float / len_float;
+    const proximity = if (loc >= x) loc - x else x - loc;
+    if (@This().match_distance == 0) {
+        // Dodge divide by zero
+        if (proximity == 0)
+            return accuracy
+        else
+            return 1.0;
+    }
+    const float_match: f64 = @floatFromInt(@This().match_distance);
+    return accuracy + (proximity / float_match);
+}
+
+/// Initialise the alphabet for the Bitap algorithm.
+/// @param pattern The text to encode.
+/// @return Hash of character locations.
+fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usize) {
+    var map = std.HashMap(u8, usize).init(allocator);
+    for (pattern) |c| {
+        if (!map.contains(c)) {
+            try map.put(c, 0);
+        }
+    }
+    for (pattern, 0..) |c, i| {
+        const shift: u6 = @intCast(pattern.len - i - 1);
+        const value: usize = map.get(c) | (1 << shift);
+        try map.put(c, value);
+    }
+    return map;
+}
+
 //|  PATCH FUNCTIONS
 
 ///
@@ -2034,7 +2211,7 @@ fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
 /// So we encode everything but the characters defined by Moz:
 /// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURI
 ///
-/// These:  !#$&'()*+,-./:;=?@_~
+/// These:  !#$&'()*+,-./:;=?@_~  (and alphanumeric ASCII)
 ///
 /// There is a nice contiguous run of 10 symbols between `&` and `/`, which we
 /// can test in two comparisons, leaving these assorted:
