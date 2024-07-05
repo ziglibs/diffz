@@ -30,7 +30,7 @@ match_threshold: f32 = 0.05,
 match_distance: u32 = 1000,
 
 /// The number of bits in a usize.
-match_max_bits: u8 = 64,
+match_max_bits: u8 = @bitSizeOf(usize),
 
 /// When deleting a large block of text (over ~64 characters), how close
 /// do the contents have to be to match the expected contents. (0.0 =
@@ -1856,8 +1856,16 @@ pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, pa
     }
 }
 
-/// Locate the best instance of 'pattern' in 'text' near 'loc' using the
+// TODO doubling the bits to fit in usize is nice and all, but there's no
+// reason to be limited to that, we have bitsets which can be as large as
+// we'd like.  This could be passed a comptime power-of-two size, and use
+// that to make an ArrayBitSet specialized for several sizes, up to, IDK,
+// 2k?  Then split very large patches only.  64, 256, 512, 1024, 2028, is
+// a nice balance between code size and versatility.
+
+/// Locate the best instance of `pattern` in `text` near `loc` using the
 /// Bitap algorithm.  Returns -1 if no match found.
+///
 /// @param text The text to search.
 /// @param pattern The pattern to search for.
 /// @param loc The location to search around.
@@ -2111,7 +2119,6 @@ fn makePatchInternal(
     var patch = Patch{};
     var char_count1 = 0;
     var char_count2 = 0;
-
     // This avoids freeing the original copy of the text:
     var first_patch = true;
     var prepatch_text = text;
@@ -2223,20 +2230,19 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
         // the null patchset was successfully 'applied' here.
         return .{ try allocator.dupe(u8, og_text), true };
     }
+    // So we can report if all patches were applied:
+    var all_applied = true;
     // Deep copy the patches so that no changes are made to originals.
     const patches = try patchListClone(allocator, og_patches);
     defer patches.deinit(allocator);
     const null_padding = try patchAddPadding(patches);
-    const text = try std.mem.concat(
-        u8,
-        .{
-            null_padding,
-            og_text,
-            null_padding,
-        },
-    );
+    var text_array = try std.ArrayList(u8).initCapacity(og_text.len);
+    defer text_array.deinit();
+    text_array.appendSlice(null_padding);
+    text_array.appendSlice(og_text);
+    text_array.appendSlice(null_padding);
     // XXX try patchSplitMax(allocator, patches);
-    var x: usize = 0;
+    //
     // delta keeps track of the offset between the expected and actual
     // location of the previous patch.  If there are patches expected at
     // positions 10 and 20, but the first patch was found at 12, delta is 2
@@ -2246,96 +2252,106 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
         const expected_loc = a_patch.start2 + delta;
         const text1 = try diffBeforeText(allocator, a_patch.diffs);
         defer allocator.free(text1);
-        var start_loc: ?usize = null;
-        var end_loc: ?usize = null;
+        var maybe_start: ?usize = null;
+        var maybe_end: ?usize = null;
         const m_max_b = @This().match_max_bits;
         if (text1.len > m_max_b) {
-            // patch_splitMax will only provide an oversized pattern
+            // patchSplitMax will only provide an oversized pattern
             // in the case of a monster delete.
-            start_loc = matchMain(allocator, text[0..m_max_b], expected_loc);
-            if (start_loc) |start| {
+            maybe_start = matchMain(
+                allocator,
+                text_array.items,
+                text1[0..m_max_b],
+                expected_loc,
+            );
+            if (maybe_start) |start| {
                 const e_start = text1.len - m_max_b;
-                end_loc = matchMain(allocator, text1[e_start .. e_start + expected_loc]);
-                if (end_loc) |end| {
-                    //
+                maybe_end = matchMain(
+                    allocator,
+                    text_array.items,
+                    text1[e_start..],
+                    e_start + expected_loc,
+                );
+                // No match if a) no end_loc or b) the matches cross each other.
+                if (maybe_end) |end| {
+                    if (start >= end) {
+                        maybe_start = null;
+                    }
+                } else {
+                    maybe_start = null;
                 }
             }
-            //            end_loc = match_main(text,
-            //                text1.Substring(text1.Length - this.Match_MaxBits),
-            //                expected_loc + text1.Length - this.Match_MaxBits);
-            //            if (end_loc == -1 || start_loc >= end_loc) {
-            //              // Can't find valid trailing context.  Drop this patch.
-            //              start_loc = -1;
-            //            }
-            //          }
+        } else {
+            maybe_start = matchMain(allocator, og_text, text1, expected_loc);
+        }
+        if (maybe_start) |start| {
+            // Found a match.  :)
+            delta = start - expected_loc;
+            //          results[x] = true;
+            const text2 = t2: {
+                if (maybe_end) |end| {
+                    break :t2 og_text[start..@min(end + m_max_b, og_text.len)];
+                } else {
+                    break :t2 og_text[start..@min(start + text1.len, og_text.len)];
+                }
+            };
+            if (std.mem.eql(u8, text1, text2)) {
+                // Perfect match, just shove the replacement text in.
+                const diff_text = try diffAfterText(allocator, a_patch.diffs);
+                defer allocator.free(diff_text);
+                try text_array.replaceRange(start, text1.len, diff_text);
+            } else {
+                // Imperfect match.  Run a diff to get a framework of equivalent
+                // indices.
+                const diffs = try diff(
+                    @This(),
+                    allocator,
+                    text1,
+                    text2,
+                    false,
+                );
+                const t1_l_float: f64 = @floatFromInt(text1.len);
+                const bad_match = diffLevenshtein(diffs) / t1_l_float > @This().patch_delete_threshold;
+                if (text1.len > m_max_b and bad_match) {
+                    // The end points match, but the content is unacceptably bad.
+                    //              results[x] = false;
+                    all_applied = false;
+                } else {
+                    diffCleanupSemanticLossless(allocator, diffs);
+                    var index1: usize = 0;
+                    for (diffs) |a_diff| {
+                        if (a_diff.operation != .equal) {
+                            const index2 = diffIndex(diffs, index1);
+                            if (a_diff.operation == .insert) {
+                                // Insertion
+                                try text_array.insertSlice(start + index2, a_diff.text);
+                            } else if (a_diff.operation == .delete) {
+                                // Deletion
+                                try text_array.replaceRange(
+                                    start + index2,
+                                    diffIndex(diffs, index1 + a_diff.text.len),
+                                    .{},
+                                );
+                            }
+                            if (a_diff.operation != .delete) {
+                                index1 += a_diff.text.len;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // No match found.  :(
+            all_applied = false;
+            // Subtract the delta for this failed patch from subsequent patches.
+            delta -= a_patch.length2 - a_patch.length1;
         }
     }
+    // strip padding
+    try text_array.replaceRange(0, null_padding.len, .{});
+    text_array.items.len -= null_padding.len;
+    return .{ text_array.toOwnedSlice(), all_applied };
 }
-
-//        if (text1.Length > this.Match_MaxBits) {
-
-//        } else {
-//          start_loc = this.match_main(text, text1, expected_loc);
-//        }
-//        if (start_loc == -1) {
-//          // No match found.  :(
-//          results[x] = false;
-//          // Subtract the delta for this failed patch from subsequent patches.
-//          delta -= aPatch.length2 - aPatch.length1;
-//        } else {
-//          // Found a match.  :)
-//          results[x] = true;
-//          delta = start_loc - expected_loc;
-//          string text2;
-//          if (end_loc == -1) {
-//            text2 = text.JavaSubstring(start_loc,
-//                Math.Min(start_loc + text1.Length, text.Length));
-//          } else {
-//            text2 = text.JavaSubstring(start_loc,
-//                Math.Min(end_loc + this.Match_MaxBits, text.Length));
-//          }
-//          if (text1 == text2) {
-//            // Perfect match, just shove the Replacement text in.
-//            text = text.Substring(0, start_loc) + diff_text2(aPatch.diffs)
-//                + text.Substring(start_loc + text1.Length);
-//          } else {
-//            // Imperfect match.  Run a diff to get a framework of equivalent
-//            // indices.
-//            List<Diff> diffs = diff_main(text1, text2, false);
-//            if (text1.Length > this.Match_MaxBits
-//                && this.diff_levenshtein(diffs) / (float) text1.Length
-//                > this.Patch_DeleteThreshold) {
-//              // The end points match, but the content is unacceptably bad.
-//              results[x] = false;
-//            } else {
-//              diff_cleanupSemanticLossless(diffs);
-//              int index1 = 0;
-//              foreach (Diff aDiff in aPatch.diffs) {
-//                if (aDiff.operation != Operation.EQUAL) {
-//                  int index2 = diff_xIndex(diffs, index1);
-//                  if (aDiff.operation == Operation.INSERT) {
-//                    // Insertion
-//                    text = text.Insert(start_loc + index2, aDiff.text);
-//                  } else if (aDiff.operation == Operation.DELETE) {
-//                    // Deletion
-//                    text = text.Remove(start_loc + index2, diff_xIndex(diffs,
-//                        index1 + aDiff.text.Length) - index2);
-//                  }
-//                }
-//                if (aDiff.operation != Operation.DELETE) {
-//                  index1 += aDiff.text.Length;
-//                }
-//              }
-//            }
-//          }
-//        }
-//        x++;
-//      }
-//      // Strip the padding off.
-//      text = text.Substring(nullPadding.Length, text.Length
-//          - 2 * nullPadding.Length);
-//      return new Object[] { text, results };
-//
 
 /// Add some padding on text start and end so that edges can match something.
 /// Intended to be called only from within patch_apply.
