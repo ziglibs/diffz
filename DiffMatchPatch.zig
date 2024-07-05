@@ -149,6 +149,57 @@ pub const Patch = struct {
     pub fn deinit(patch: *Patch, allocator: Allocator) void {
         deinitDiffList(allocator, patch.diffs);
     }
+
+    /// Emit patch in Unidiff format, as specifified here:
+    /// https://github.com/google/diff-match-patch/wiki/Unidiff
+    /// This is similar to GNU Unidiff format, but not identical.
+    /// Header: @@ -382,8 +481,9 @@
+    /// Indices are printed as 1-based, not 0-based.
+    /// @return The GNU diff string.
+    pub fn asText(patch: Patch, allocator: Allocator) ![]const u8 {
+        var text_array = std.ArrayList(u8).init(allocator);
+        defer text_array.deinit();
+        const writer = text_array.writer();
+        try patch.writeText(writer, patch);
+        return text_array.toOwnedSlice();
+    }
+
+    const format = std.fmt.format;
+
+    /// Stream textual patch representation to Writer.  See `asText`
+    /// for more information.
+    pub fn writeText(writer: anytype, patch: Patch) !void {
+        // Write header.
+        _ = try writer.write("@@ -");
+        // Stream coordinates
+        if (patch.length1 == 0) {
+            try format(writer, "{d},0", .{patch.start1});
+        } else if (patch.length1 == 1) {
+            try format(writer, "{d}", .{patch.start1 + 1});
+        } else {
+            try format(writer, "{d},{d}", .{ patch.start1 + 1, patch.length1 });
+        }
+        _ = try writer.write(" +");
+        if (patch.length2 == 0) {
+            try std.fmt.format(writer, "{d},0", .{patch.start2});
+        } else if (patch.length2 == 1) {
+            _ = try format(writer, "{d}", .{patch.start2 + 1});
+        } else {
+            try format(writer, "{d},{d}", .{ patch.start2 + 1, patch.length2 });
+        }
+        _ = writer.write(" @@\n");
+        // Escape the body of the patch with %xx notation.
+        for (patch.diffs) |a_diff| {
+            switch (a_diff.operation) {
+                .insert => try writer.writeByte('+'),
+                .delete => try writer.writeByte('-'),
+                .equal => try writer.writeByte('='),
+            }
+            _ = try writeUriEncoded(writer, diff.text);
+        }
+        try writer.writeByte('\n');
+        return;
+    }
 };
 
 pub const DiffError = error{OutOfMemory};
@@ -2747,6 +2798,111 @@ fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
     }
     return new_patches;
 }
+
+///
+/// Take a list of patches and return a textual representation.
+/// @param patches List of Patch objects.
+/// @return Text representation of patches.
+///
+pub fn patchToText(allocator: Allocator, patches: PatchList) ![]const u8 {
+    const text_array = try std.ArrayList(u8).init(allocator);
+    defer text_array.deinit();
+    const writer = text_array.writer();
+    try writePatch(writer, patches);
+    return text_array.toOwnedSlice();
+}
+
+/// Stream a `PatchList` to the provided Writer.
+pub fn writePatch(writer: anytype, patches: PatchList) !void {
+    for (patches) |a_patch| {
+        try a_patch.writePatch(writer);
+    }
+}
+
+//    /**
+//     * Parse a textual representation of patches and return a List of Patch
+//     * objects.
+//     * @param textline Text representation of patches.
+//     * @return List of Patch objects.
+//     * @throws ArgumentException If invalid input.
+//     */
+//    public List<Patch> patch_fromText(string textline) {
+//      List<Patch> patches = new List<Patch>();
+//      if (textline.Length == 0) {
+//        return patches;
+//      }
+//      string[] text = textline.Split('\n');
+//      int textPointer = 0;
+//      Patch patch;
+//      Regex patchHeader
+//          = new Regex("^@@ -(\\d+),?(\\d*) \\+(\\d+),?(\\d*) @@$");
+//      Match m;
+//      char sign;
+//      string line;
+//      while (textPointer < text.Length) {
+//        m = patchHeader.Match(text[textPointer]);
+//        if (!m.Success) {
+//          throw new ArgumentException("Invalid patch string: "
+//              + text[textPointer]);
+//        }
+//        patch = new Patch();
+//        patches.Add(patch);
+//        patch.start1 = Convert.ToInt32(m.Groups[1].Value);
+//        if (m.Groups[2].Length == 0) {
+//          patch.start1--;
+//          patch.length1 = 1;
+//        } else if (m.Groups[2].Value == "0") {
+//          patch.length1 = 0;
+//        } else {
+//          patch.start1--;
+//          patch.length1 = Convert.ToInt32(m.Groups[2].Value);
+//        }
+
+//        patch.start2 = Convert.ToInt32(m.Groups[3].Value);
+//        if (m.Groups[4].Length == 0) {
+//          patch.start2--;
+//          patch.length2 = 1;
+//        } else if (m.Groups[4].Value == "0") {
+//          patch.length2 = 0;
+//        } else {
+//          patch.start2--;
+//          patch.length2 = Convert.ToInt32(m.Groups[4].Value);
+//        }
+//        textPointer++;
+
+//        while (textPointer < text.Length) {
+//          try {
+//            sign = text[textPointer][0];
+//          } catch (IndexOutOfRangeException) {
+//            // Blank line?  Whatever.
+//            textPointer++;
+//            continue;
+//          }
+//          line = text[textPointer].Substring(1);
+//          line = line.Replace("+", "%2b");
+//          line = HttpUtility.UrlDecode(line);
+//          if (sign == '-') {
+//            // Deletion.
+//            patch.diffs.Add(new Diff(Operation.DELETE, line));
+//          } else if (sign == '+') {
+//            // Insertion.
+//            patch.diffs.Add(new Diff(Operation.INSERT, line));
+//          } else if (sign == ' ') {
+//            // Minor equality.
+//            patch.diffs.Add(new Diff(Operation.EQUAL, line));
+//          } else if (sign == '@') {
+//            // Start of next patch.
+//            break;
+//          } else {
+//            // WTF?
+//            throw new ArgumentException(
+//                "Invalid patch mode '" + sign + "' in: " + line);
+//          }
+//          textPointer++;
+//        }
+//      }
+//      return patches;
+//    }
 
 ///
 /// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig

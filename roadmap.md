@@ -1,7 +1,8 @@
 # Roadmap
 
 - [ ] Port patch
-- [ ] Port match
+- [✅] Port match
+- [ ] Port test coverage
 - [ ] Diff stream
     - [ ] Use Unicode characters and codepoint indices - 32
     - [ ] Implement line diff as a stream
@@ -15,6 +16,7 @@
     - [ ] Imara diff has an optimized histogram:
           https://github.com/pascalkuthe/imara-diff
 - [ ] POSIX-diff compatible patch output?
+    - [ ] This one seems pretty worthwhile to me.
 - [ ] Delta functions?  They aren't used internally.
 
 Covers the bases.
