@@ -1862,6 +1862,115 @@ pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, pa
 // that to make an ArrayBitSet specialized for several sizes, up to, IDK,
 // 2k?  Then split very large patches only.  64, 256, 512, 1024, 2028, is
 // a nice balance between code size and versatility.
+// Something like this:
+fn matchBitapImproved(
+    allocator: Allocator,
+    text: []const u8,
+    pattern: []const u8,
+    loc: usize,
+    UIntType: type,
+) ?usize {
+    assert(pattern.len < @bitSizeOf(UIntType));
+    const ShiftWidth = ShiftSizeForType(UIntType);
+    // Initialise the alphabet.
+    var map = try matchAlphabet(allocator, pattern);
+    defer map.deinit();
+    // Highest score beyond which we give up.
+    var threshold = @This().threshold;
+    // Is there a nearby exact match? (speedup)
+    var best_loc = std.mem.indexOfPos(u8, text, pattern);
+    if (best_loc) |best| {
+        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+    }
+    // What about in the other direction? (speedup)
+    const trunc_text = text[0..@min(loc + pattern.len, text.len)];
+    best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
+    if (best_loc) |best| {
+        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+    }
+    // Initialise the bit arrays.
+    const shift: ShiftWidth = @intCast(pattern.len - 1);
+    // 0 for a match for faster bit twiddles
+    const matchmask = ~(1 << shift);
+    best_loc = null;
+    var bin_min: usize = undefined;
+    var bin_mid: usize = undefined;
+    var bin_max = pattern.len + text.len;
+    // null last_rd to simplying freeing memory
+    var last_rd = try allocator.alloc(UIntType, 0);
+    for (0..pattern.len) |d| {
+        // Scan for the best match; each iteration allows for one more error.
+        // Run a binary search to determine how far from 'loc' we can stray at
+        // this error level.
+        bin_min = 0;
+        bin_mid = bin_max;
+        while (bin_min < bin_mid) {
+            if (matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
+                bin_min = bin_mid;
+            } else {
+                bin_max = bin_mid;
+            }
+            bin_mid = (bin_max - bin_min) / 2 + bin_min;
+        }
+        // Use the result from this iteration as the maximum for the next.
+        bin_max = bin_mid;
+        var start = @max(1, loc - bin_mid + 1);
+        const finish = @min(loc + bin_mid, text.len) + pattern.len;
+        var rd = try allocator.alloc(UIntType, finish + 2);
+        const dshift: ShiftWidth = @intCast(d);
+        rd[finish + 1] = 1 << dshift;
+        var j = finish;
+        while (j >= start) : (j -= 1) {
+            const char_match: usize = if (text.len <= j - 1 or !map.contains(text[j - 1]))
+                // Out of range.
+                0
+            else
+                map.get(text[j - 1]);
+            if (d == 0) {
+                // First pass: exact match.
+                rd[j] = ((rd[j + 1] << 1)) & char_match;
+            } else {
+                // Subsequent passes: fuzzy match.
+                rd[j] = ((rd[j + 1] << 1)) & char_match & (((last_rd[j + 1] & last_rd[j]) << 1)) & last_rd[j + 1];
+            }
+            if ((rd[j] & matchmask) != 0) {
+                const score = matchBitapScore(d, j - 1, loc, pattern);
+                // This match will almost certainly be better than any existing
+                // match.  But check anyway.
+                if (score <= threshold) {
+                    // Told you so.
+                    threshold = score;
+                    best_loc = j - 1;
+                    if (best_loc > loc) {
+                        // When passing loc, don't exceed our current distance from loc.
+                        start = @max(1, 2 * loc - best_loc);
+                    } else {
+                        // Already passed loc, downhill from here on in.
+                        break;
+                    }
+                }
+            }
+        }
+        if (matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
+            // No hope for a (better) match at greater error levels.
+            break;
+        }
+        allocator.free(last_rd);
+        last_rd = rd;
+    }
+    allocator.free(last_rd);
+    return best_loc;
+}
+
+fn ShiftSizeForType(T: type) type {
+    return switch (@typeInfo(T.Int.bits)) {
+        64 => u6,
+        256 => u8,
+        1024 => u9,
+        2048 => u10,
+        else => unreachable,
+    };
+}
 
 /// Locate the best instance of `pattern` in `text` near `loc` using the
 /// Bitap algorithm.  Returns -1 if no match found.
@@ -1875,7 +1984,7 @@ fn matchBitap(
     text: []const u8,
     pattern: []const u8,
     loc: usize,
-) ?usize {
+) !?usize {
     // TODO decide what to do here:
     // assert (Match_MaxBits == 0 || pattern.Length <= Match_MaxBits)
     //    : "Pattern too long for this application.";
@@ -1890,6 +1999,9 @@ fn matchBitap(
     if (best_loc) |best| {
         threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
     }
+    // TODO obviously if we want a speedup here, we do this:
+    // if (threshold == 0.0) return best_loc;
+    // We don't have to unwrap best_loc because the retval is ?usize already
     // What about in the other direction? (speedup)
     const trunc_text = text[0..@min(loc + pattern.len, text.len)];
     best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
@@ -1976,18 +2088,23 @@ fn matchBitap(
 /// @param pattern Pattern being sought.
 /// @return Overall score for match (0.0 = good, 1.0 = bad).
 fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
+    // shortcut? TODO, proof in comments
+    // if (e == 0 and x == loc) return 0.0;
     const e_float: f32 = @floatFromInt(e);
     const len_float: f32 = @floatFromInt(pattern.len);
+    // if e == 0, accuracy == 0: 0/x = 0
     const accuracy = e_float / len_float;
+    // if loc == x, proximity == 0
     const proximity = if (loc >= x) loc - x else x - loc;
     if (@This().match_distance == 0) {
         // Dodge divide by zero
-        if (proximity == 0)
+        if (proximity == 0) // therefore this returns 0
             return accuracy
         else
             return 1.0;
     }
     const float_match: f64 = @floatFromInt(@This().match_distance);
+    // or this is 0 + 0/f_m aka 0
     return accuracy + (proximity / float_match);
 }
 
@@ -2005,6 +2122,27 @@ fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usi
     for (pattern, 0..) |c, i| {
         const shift: u6 = @intCast(pattern.len - i - 1);
         const value: usize = map.get(c) | (1 << shift);
+        try map.put(c, value);
+    }
+    return map;
+}
+
+/// Initialise the alphabet for the Bitap algorithm.
+/// @param pattern The text to encode.
+/// @return Hash of character locations.
+fn matchAlphabetImproved(allocator: Allocator, pattern: []const u8, UIntSize: type) !std.HashMap(u8, usize) {
+    const ShiftType = ShiftSizeForType(UIntSize);
+    var map = std.HashMap(u8, usize).init(allocator);
+    errdefer map.deinit();
+    for (pattern) |c| {
+        if (!map.contains(c)) {
+            try map.put(c, 0);
+        }
+    }
+    for (pattern, 0..) |c, i| {
+        const shift: ShiftType = @intCast(pattern.len - i - 1);
+        // TODO I think we want c_mask & ~ 1 << shift here:
+        const value: UIntSize = map.get(c) | (1 << shift);
         try map.put(c, value);
     }
     return map;
@@ -2241,7 +2379,7 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
     text_array.appendSlice(null_padding);
     text_array.appendSlice(og_text);
     text_array.appendSlice(null_padding);
-    // XXX try patchSplitMax(allocator, patches);
+    try patchSplitMax(allocator, patches);
     //
     // delta keeps track of the offset between the expected and actual
     // location of the previous patch.  If there are patches expected at
@@ -2353,71 +2491,244 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
     return .{ text_array.toOwnedSlice(), all_applied };
 }
 
+// Look through the patches and break up any which are longer than the
+// maximum limit of the match algorithm.
+// Intended to be called only from within patch_apply.
+// @param patches List of Patch objects.
+fn patchSplitMax(allocator: Allocator, patches: PatchList) !PatchList {
+    const patch_size = @This().match_max_bits;
+    const patch_margin = @This().patch_margin;
+    const max_patch_len = patch_size - patch_size - patch_margin;
+    // Mutating an array while iterating it? Sure, lets!
+    var x = 0;
+    while (x < patches.len) : (x += 1) {
+        if (patches[x].length1 <= patch_size) continue;
+        // We have a big ol' patch.
+        const bigpatch = patches.orderedRemove(x);
+        defer bigpatch.deinit(allocator);
+        // Prevent incrementing past the next patch:
+        x -= 1;
+        var start1 = bigpatch.start1;
+        var start2 = bigpatch.start2;
+        // start with an empty precontext so that we can deinit consistently
+        var precontext = try allocator.alloc(u8, 0);
+        while (bigpatch.diffs.items.len != 0) {
+            // Create one of several smaller patches.
+            var patch = Patch{};
+            var empty = true;
+            patch.start1 = start1 - precontext.items.len;
+            patch.start2 = start2 - precontext.items.len;
+            if (precontext.len != 0) {
+                patch.length2 = precontext.length;
+                patch.length1 = patch.length2;
+                try patch.diffs.append(
+                    allocator,
+                    Diff{
+                        .operation = .equal,
+                        .text = precontext.toOwnedSlice(),
+                    },
+                );
+            }
+            while (bigpatch.diffs.count != 0 and patch.length1 < max_patch_len) {
+                const diff_type = bigpatch.diffs[0].operation;
+                const diff_text = bigpatch.diffs[0].text;
+                if (diff_type == .insert) {
+                    // Insertions are harmless.
+                    patch.length2 += diff_text.len;
+                    start2 += diff_text.len;
+                    // Move the patch (transfers ownership)
+                    const diff1 = bigpatch.diffs.orderedRemove(0);
+                    patch.diffs.append(diff1);
+                    empty = false;
+                } else if (cond: {
+                    // zig fmt simply will not line break if clauses :/
+                    const a = diff_type == .delete;
+                    const b = patch.diffs.items.len == 1;
+                    const c = patch.diffs[0].operation == .equal;
+                    const d = diff_text.len > 2 * patch_size;
+                    break :cond a and b and c and d;
+                }) {
+                    // This is a large deletion.  Let it pass in one chunk.
+                    patch.length1 += diff_text.len;
+                    start1 += diff_text.len;
+                    empty = false;
+                    // Transfer to patch:
+                    const diff1 = bigpatch.diffs.orderedRemove(0);
+                    try patch.diffs.append(allocator, diff1);
+                } else {
+                    // Deletion or equality.  Only take as much as we can stomach.
+                    const text_end = @min(diff_text.len, patch_size - patch.length1 - patch_margin);
+                    const new_diff_text = diff_text[0..text_end];
+                    patch.length += new_diff_text.len;
+                    start1 += new_diff_text.len;
+                    if (diff_type == .equal) {
+                        patch.length2 += diff_text.len;
+                        start2 += diff_text.len;
+                    } else {
+                        empty = false;
+                    }
+                    // Now check if we did anything.
+                    if (new_diff_text.len == diff_text.len) {
+                        // We can reuse the diff.
+                        const diff1 = bigpatch.diffs.orderedRemove(0);
+                        try patch.diffs.append(allocator, diff1);
+                    } else {
+                        // Free and dupe
+                        const old_diff = bigpatch.diffs[0];
+                        defer old_diff.deinit(allocator);
+                        bigpatch.diffs[0] = Diff{
+                            .operation = diff_type,
+                            .text = try allocator.dupe(u8, new_diff_text),
+                        };
+                    }
+                }
+            }
+            // Compute the head context for the next patch.
+            const context_len: isize = precontext.len - patch_margin;
+            allocator.free(precontext);
+            if (context_len > 0) {
+                const after_text = try diffAfterText(allocator, patch.diffs);
+                defer allocator.free(after_text);
+                precontext = try allocator.dupe(u8, after_text[context_len..]);
+            } else {
+                precontext = try allocator.alloc(u8, 0);
+            }
+            // Append the end context for this patch.
+            const post_text = try diffBeforeText(bigpatch.diffs);
+            const postcontext = post: {
+                if (post_text.len > patch_margin) {
+                    defer allocator.free(post_text);
+                    break :post post_text[0..patch_margin];
+                } else {
+                    break :post post_text;
+                }
+            };
+            if (postcontext.len != 0) {
+                patch.length1 += postcontext.len;
+                patch.length2 += postcontext.len;
+                const maybe_last_diff = patch.diffs.getLastOrNull();
+                if (maybe_last_diff) |last_diff| {
+                    if (last_diff.operation == .equal) {
+                        // free this diff and swap in a new one
+                        defer last_diff.deinit(allocator);
+                        patch.diffs.items.len -= 1;
+                        const new_diff_text = try std.mem.concat(
+                            allocator,
+                            last_diff.text,
+                            postcontext,
+                        );
+                        try patch.diffs.append(
+                            allocator,
+                            Diff{ .operation = .equal, .text = new_diff_text },
+                        );
+                    }
+                } else {
+                    // New diff from postcontext.
+                    try patch.diffs.append(
+                        allocator,
+                        Diff{ .operation = .equal, .text = postcontext },
+                    );
+                }
+            } else {
+                // We didn't allocate memory, but it's polite to free it (?)
+                allocator.free(postcontext);
+            }
+            if (!empty) {
+                // Insert the next patch
+                // Goes after x, and we need increment to skip:
+                x += 1;
+                try patches.insert(allocator, x, patch);
+            }
+        }
+        // free final precontext
+        allocator.free(precontext);
+    }
+}
+
 /// Add some padding on text start and end so that edges can match something.
 /// Intended to be called only from within patch_apply.
 /// @param patches Array of Patch objects.
 /// @return The padding string added to each side.
 fn patchAddPadding(allocator: Allocator, patches: PatchList) ![]const u8 {
-    //
-    if (XXX) {
-        _ = allocator;
-        _ = patches;
+    assert(patches.items.len != 0);
+    const pad_len = @This().patch_margin;
+    var paddingcodes = try std.ArrayList(u8).initCapacity(allocator, pad_len);
+    defer paddingcodes.deinit();
+    {
+        var control_code: u8 = 1;
+        while (control_code <= pad_len) : (control_code += 1) {
+            try paddingcodes.append(control_code);
+        }
     }
+    // Bump all the patches forward.
+    for (patches) |a_patch| {
+        a_patch.start1 += pad_len;
+        a_patch.start2 += pad_len;
+    }
+    // Add some padding on start of first diff.
+    var patch = patches.items[0];
+    var diffs = patch.diffs;
+    if (diffs.items.len == 0 or diffs.items[0].operation != .equal) {
+        // Add nullPadding equality.
+        try diffs.insert(
+            allocator,
+            0,
+            Diff{
+                .operation = .equal,
+                .text = try allocator.dupe(u8, paddingcodes.items),
+            },
+        );
+        patch.start1 -= pad_len;
+        // OG code says "Should be 0" but this statement is not justified
+        assert(patch.start1 == 0);
+        patch.start2 -= pad_len;
+        assert(patch.start2 == 0);
+        patch.length1 += pad_len;
+        patch.lenght2 += pad_len;
+    } else if (pad_len > diffs.items[0].text.len) {
+        // Grow first equality.
+        var diff1 = diffs.items[0];
+        defer allocator.free(diff1.text);
+        const extra_len = pad_len - diff1.text.len;
+        diff1.text = try std.mem.concat(
+            allocator,
+            paddingcodes.items[diff1.text.len..],
+            diff1.text,
+        );
+        patch.start1 -= extra_len;
+        patch.start2 -= extra_len;
+        patch.length1 += extra_len;
+        patch.length2 += extra_len;
+    }
+    // Add some padding on end of last diff.
+    patch = patches.getLast();
+    diffs = patch.diffs;
+    if (diffs.items.len == 0 or diffs.getLast().opeation != .equal) {
+        // Add nullPadding equality.
+        diffs.append(
+            allocator,
+            Diff{
+                .operation = .equal,
+                .text = try allocator.dupe(u8, paddingcodes.items),
+            },
+        );
+        patch.length1 += pad_len;
+        patch.length2 += pad_len;
+    } else if (pad_len > diffs.getLast().text.len) {
+        // Grow last equality.
+        var last_diff = diffs.getLast();
+        defer allocator.free(last_diff.text);
+        const extra_len = pad_len - last_diff.text.len;
+        last_diff.text = try std.mem.concat(
+            allocator,
+            last_diff.text,
+            paddingcodes[0..extra_len],
+        );
+        patch.length1 += extra_len;
+        patch.length2 += extra_len;
+    }
+    return paddingcodes.toOwnedSlice();
 }
-//    public string patch_addPadding(List<Patch> patches) {
-//      short paddingLength = this.Patch_Margin;
-//      string nullPadding = string.Empty;
-//      for (short x = 1; x <= paddingLength; x++) {
-//        nullPadding += (char)x;
-//      }
-//
-//      // Bump all the patches forward.
-//      foreach (Patch aPatch in patches) {
-//        aPatch.start1 += paddingLength;
-//        aPatch.start2 += paddingLength;
-//      }
-//
-//      // Add some padding on start of first diff.
-//      Patch patch = patches.First();
-//      List<Diff> diffs = patch.diffs;
-//      if (diffs.Count == 0 || diffs.First().operation != Operation.EQUAL) {
-//        // Add nullPadding equality.
-//        diffs.Insert(0, new Diff(Operation.EQUAL, nullPadding));
-//        patch.start1 -= paddingLength;  // Should be 0.
-//        patch.start2 -= paddingLength;  // Should be 0.
-//        patch.length1 += paddingLength;
-//        patch.length2 += paddingLength;
-//      } else if (paddingLength > diffs.First().text.Length) {
-//        // Grow first equality.
-//        Diff firstDiff = diffs.First();
-//        int extraLength = paddingLength - firstDiff.text.Length;
-//        firstDiff.text = nullPadding.Substring(firstDiff.text.Length)
-//            + firstDiff.text;
-//        patch.start1 -= extraLength;
-//        patch.start2 -= extraLength;
-//        patch.length1 += extraLength;
-//        patch.length2 += extraLength;
-//      }
-//
-//      // Add some padding on end of last diff.
-//      patch = patches.Last();
-//      diffs = patch.diffs;
-//      if (diffs.Count == 0 || diffs.Last().operation != Operation.EQUAL) {
-//        // Add nullPadding equality.
-//        diffs.Add(new Diff(Operation.EQUAL, nullPadding));
-//        patch.length1 += paddingLength;
-//        patch.length2 += paddingLength;
-//      } else if (paddingLength > diffs.Last().text.Length) {
-//        // Grow last equality.
-//        Diff lastDiff = diffs.Last();
-//        int extraLength = paddingLength - lastDiff.text.Length;
-//        lastDiff.text += nullPadding.Substring(0, extraLength);
-//        patch.length1 += extraLength;
-//        patch.length2 += extraLength;
-//      }
-//
-//      return nullPadding;
-//    }
 
 ///
 /// Given an array of patches, return another array that is identical.
