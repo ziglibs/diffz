@@ -8,6 +8,10 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
 const PatchList = ArrayListUnmanaged(Patch);
 
+//| XXX This boolean is entirely for calming the compiler down while working
+
+const XXX = false;
+
 //| Fields
 
 /// Number of milliseconds to map a diff before giving up (0 for infinity).
@@ -1848,9 +1852,8 @@ pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, pa
         return loc;
     } else {
         // Do a fuzzy compare.
-        // return match_bitap(allocator, text, pattern, loc);
+        return matchBitap(allocator, text, pattern, loc);
     }
-    _ = allocator;
 }
 
 /// Locate the best instance of 'pattern' in 'text' near 'loc' using the
@@ -1868,6 +1871,7 @@ fn matchBitap(
     // TODO decide what to do here:
     // assert (Match_MaxBits == 0 || pattern.Length <= Match_MaxBits)
     //    : "Pattern too long for this application.";
+
     // Initialise the alphabet.
     var map = try matchAlphabet(allocator, pattern);
     defer map.deinit();
@@ -1984,6 +1988,7 @@ fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
 /// @return Hash of character locations.
 fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usize) {
     var map = std.HashMap(u8, usize).init(allocator);
+    errdefer map.deinit();
     for (pattern) |c| {
         if (!map.contains(c)) {
             try map.put(c, 0);
@@ -2008,6 +2013,7 @@ fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usi
 fn patchAddContext(allocator: Allocator, patch: *Patch, text: []const u8) !void {
     if (text.len == 0) return;
     // TODO the fixup logic here might make patterns too large?
+    // It should be ok, because big patches get broken up.  Hmm.
     var padding = 0;
     { // Grow the pattern around the patch until unique, to set padding amount.
         var pattern = text[patch.start2 .. patch.start2 + patch.length1];
@@ -2198,12 +2204,216 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
 
 // TODO other makePatch methods...
 
+/// Merge a set of patches onto the text.  Returns a tuple: the first of which
+/// is the patched text, the second of which is a PatchList, which may be empty,
+/// containing patches which were not successfully applied.
+///
+/// TODO I'm just going to return a boolean saying whether all patches
+/// were successful.  Rethink this at some point.
+///
+/// @param patches Array of Patch objects
+/// @param text Old text.
+/// @return Two element Object array, containing the new text and an array of
+///      bool values.
+pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const u8) !struct { []const u8, bool } {
+    if (og_patches.items.len == 0) {
+        // As silly as this is, we dupe the text, because something
+        // passing an empty patchset isn't going to check, and will
+        // end up double-freeing if we don't.  Going with 'true' as
+        // the null patchset was successfully 'applied' here.
+        return .{ try allocator.dupe(u8, og_text), true };
+    }
+    // Deep copy the patches so that no changes are made to originals.
+    const patches = try patchListClone(allocator, og_patches);
+    defer patches.deinit(allocator);
+    const null_padding = try patchAddPadding(patches);
+    const text = try std.mem.concat(
+        u8,
+        .{
+            null_padding,
+            og_text,
+            null_padding,
+        },
+    );
+    // XXX try patchSplitMax(allocator, patches);
+    var x: usize = 0;
+    // delta keeps track of the offset between the expected and actual
+    // location of the previous patch.  If there are patches expected at
+    // positions 10 and 20, but the first patch was found at 12, delta is 2
+    // and the second patch has an effective expected position of 22.
+    var delta: usize = 0;
+    for (patches) |a_patch| {
+        const expected_loc = a_patch.start2 + delta;
+        const text1 = try diffBeforeText(allocator, a_patch.diffs);
+        defer allocator.free(text1);
+        var start_loc: ?usize = null;
+        var end_loc: ?usize = null;
+        const m_max_b = @This().match_max_bits;
+        if (text1.len > m_max_b) {
+            // patch_splitMax will only provide an oversized pattern
+            // in the case of a monster delete.
+            start_loc = matchMain(allocator, text[0..m_max_b], expected_loc);
+            if (start_loc) |start| {
+                const e_start = text1.len - m_max_b;
+                end_loc = matchMain(allocator, text1[e_start .. e_start + expected_loc]);
+                if (end_loc) |end| {
+                    //
+                }
+            }
+            //            end_loc = match_main(text,
+            //                text1.Substring(text1.Length - this.Match_MaxBits),
+            //                expected_loc + text1.Length - this.Match_MaxBits);
+            //            if (end_loc == -1 || start_loc >= end_loc) {
+            //              // Can't find valid trailing context.  Drop this patch.
+            //              start_loc = -1;
+            //            }
+            //          }
+        }
+    }
+}
+
+//        if (text1.Length > this.Match_MaxBits) {
+
+//        } else {
+//          start_loc = this.match_main(text, text1, expected_loc);
+//        }
+//        if (start_loc == -1) {
+//          // No match found.  :(
+//          results[x] = false;
+//          // Subtract the delta for this failed patch from subsequent patches.
+//          delta -= aPatch.length2 - aPatch.length1;
+//        } else {
+//          // Found a match.  :)
+//          results[x] = true;
+//          delta = start_loc - expected_loc;
+//          string text2;
+//          if (end_loc == -1) {
+//            text2 = text.JavaSubstring(start_loc,
+//                Math.Min(start_loc + text1.Length, text.Length));
+//          } else {
+//            text2 = text.JavaSubstring(start_loc,
+//                Math.Min(end_loc + this.Match_MaxBits, text.Length));
+//          }
+//          if (text1 == text2) {
+//            // Perfect match, just shove the Replacement text in.
+//            text = text.Substring(0, start_loc) + diff_text2(aPatch.diffs)
+//                + text.Substring(start_loc + text1.Length);
+//          } else {
+//            // Imperfect match.  Run a diff to get a framework of equivalent
+//            // indices.
+//            List<Diff> diffs = diff_main(text1, text2, false);
+//            if (text1.Length > this.Match_MaxBits
+//                && this.diff_levenshtein(diffs) / (float) text1.Length
+//                > this.Patch_DeleteThreshold) {
+//              // The end points match, but the content is unacceptably bad.
+//              results[x] = false;
+//            } else {
+//              diff_cleanupSemanticLossless(diffs);
+//              int index1 = 0;
+//              foreach (Diff aDiff in aPatch.diffs) {
+//                if (aDiff.operation != Operation.EQUAL) {
+//                  int index2 = diff_xIndex(diffs, index1);
+//                  if (aDiff.operation == Operation.INSERT) {
+//                    // Insertion
+//                    text = text.Insert(start_loc + index2, aDiff.text);
+//                  } else if (aDiff.operation == Operation.DELETE) {
+//                    // Deletion
+//                    text = text.Remove(start_loc + index2, diff_xIndex(diffs,
+//                        index1 + aDiff.text.Length) - index2);
+//                  }
+//                }
+//                if (aDiff.operation != Operation.DELETE) {
+//                  index1 += aDiff.text.Length;
+//                }
+//              }
+//            }
+//          }
+//        }
+//        x++;
+//      }
+//      // Strip the padding off.
+//      text = text.Substring(nullPadding.Length, text.Length
+//          - 2 * nullPadding.Length);
+//      return new Object[] { text, results };
+//
+
+/// Add some padding on text start and end so that edges can match something.
+/// Intended to be called only from within patch_apply.
+/// @param patches Array of Patch objects.
+/// @return The padding string added to each side.
+fn patchAddPadding(allocator: Allocator, patches: PatchList) ![]const u8 {
+    //
+    if (XXX) {
+        _ = allocator;
+        _ = patches;
+    }
+}
+//    public string patch_addPadding(List<Patch> patches) {
+//      short paddingLength = this.Patch_Margin;
+//      string nullPadding = string.Empty;
+//      for (short x = 1; x <= paddingLength; x++) {
+//        nullPadding += (char)x;
+//      }
+//
+//      // Bump all the patches forward.
+//      foreach (Patch aPatch in patches) {
+//        aPatch.start1 += paddingLength;
+//        aPatch.start2 += paddingLength;
+//      }
+//
+//      // Add some padding on start of first diff.
+//      Patch patch = patches.First();
+//      List<Diff> diffs = patch.diffs;
+//      if (diffs.Count == 0 || diffs.First().operation != Operation.EQUAL) {
+//        // Add nullPadding equality.
+//        diffs.Insert(0, new Diff(Operation.EQUAL, nullPadding));
+//        patch.start1 -= paddingLength;  // Should be 0.
+//        patch.start2 -= paddingLength;  // Should be 0.
+//        patch.length1 += paddingLength;
+//        patch.length2 += paddingLength;
+//      } else if (paddingLength > diffs.First().text.Length) {
+//        // Grow first equality.
+//        Diff firstDiff = diffs.First();
+//        int extraLength = paddingLength - firstDiff.text.Length;
+//        firstDiff.text = nullPadding.Substring(firstDiff.text.Length)
+//            + firstDiff.text;
+//        patch.start1 -= extraLength;
+//        patch.start2 -= extraLength;
+//        patch.length1 += extraLength;
+//        patch.length2 += extraLength;
+//      }
+//
+//      // Add some padding on end of last diff.
+//      patch = patches.Last();
+//      diffs = patch.diffs;
+//      if (diffs.Count == 0 || diffs.Last().operation != Operation.EQUAL) {
+//        // Add nullPadding equality.
+//        diffs.Add(new Diff(Operation.EQUAL, nullPadding));
+//        patch.length1 += paddingLength;
+//        patch.length2 += paddingLength;
+//      } else if (paddingLength > diffs.Last().text.Length) {
+//        // Grow last equality.
+//        Diff lastDiff = diffs.Last();
+//        int extraLength = paddingLength - lastDiff.text.Length;
+//        lastDiff.text += nullPadding.Substring(0, extraLength);
+//        patch.length1 += extraLength;
+//        patch.length2 += extraLength;
+//      }
+//
+//      return nullPadding;
+//    }
+
 ///
 /// Given an array of patches, return another array that is identical.
 /// @param patches Array of Patch objects.
 /// @return Array of Patch objects.
 fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
     var new_patches = PatchList{};
+    errdefer {
+        for (new_patches) |p| {
+            p.deinit(allocator);
+        }
+    }
     new_patches.initCapacity(allocator, patches.items.len);
     for (patches) |patch| {
         try new_patches.append(allocator, try patch.clone(allocator));
