@@ -8,6 +8,11 @@ const ArrayListUnmanaged = std.ArrayListUnmanaged;
 const DiffList = ArrayListUnmanaged(Diff);
 const PatchList = ArrayListUnmanaged(Patch);
 
+pub const DiffError = error{
+    OutOfMemory,
+    BadPatchString,
+};
+
 //| XXX This boolean is entirely for calming the compiler down while working
 
 const XXX = false;
@@ -170,7 +175,7 @@ pub const Patch = struct {
     /// for more information.
     pub fn writeText(writer: anytype, patch: Patch) !void {
         // Write header.
-        _ = try writer.write("@@ -");
+        _ = try writer.write(PATCH_HEAD);
         // Stream coordinates
         if (patch.length1 == 0) {
             try format(writer, "{d},0", .{patch.start1});
@@ -187,7 +192,7 @@ pub const Patch = struct {
         } else {
             try format(writer, "{d},{d}", .{ patch.start2 + 1, patch.length2 });
         }
-        _ = writer.write(" @@\n");
+        _ = writer.write(PATCH_TAIL);
         // Escape the body of the patch with %xx notation.
         for (patch.diffs) |a_diff| {
             switch (a_diff.operation) {
@@ -196,13 +201,14 @@ pub const Patch = struct {
                 .equal => try writer.writeByte('='),
             }
             _ = try writeUriEncoded(writer, diff.text);
+            try writer.writeByte('\n');
         }
-        try writer.writeByte('\n');
         return;
     }
 };
 
-pub const DiffError = error{OutOfMemory};
+const PATCH_HEAD = "@@ -";
+const PATCH_TAIL = " @@\n";
 
 /// Find the differences between two texts.
 /// @param before Old string to be diffed.
@@ -2819,90 +2825,151 @@ pub fn writePatch(writer: anytype, patches: PatchList) !void {
     }
 }
 
-//    /**
-//     * Parse a textual representation of patches and return a List of Patch
-//     * objects.
-//     * @param textline Text representation of patches.
-//     * @return List of Patch objects.
-//     * @throws ArgumentException If invalid input.
-//     */
-//    public List<Patch> patch_fromText(string textline) {
-//      List<Patch> patches = new List<Patch>();
-//      if (textline.Length == 0) {
-//        return patches;
-//      }
-//      string[] text = textline.Split('\n');
-//      int textPointer = 0;
-//      Patch patch;
-//      Regex patchHeader
-//          = new Regex("^@@ -(\\d+),?(\\d*) \\+(\\d+),?(\\d*) @@$");
-//      Match m;
-//      char sign;
-//      string line;
-//      while (textPointer < text.Length) {
-//        m = patchHeader.Match(text[textPointer]);
-//        if (!m.Success) {
-//          throw new ArgumentException("Invalid patch string: "
-//              + text[textPointer]);
-//        }
-//        patch = new Patch();
-//        patches.Add(patch);
-//        patch.start1 = Convert.ToInt32(m.Groups[1].Value);
-//        if (m.Groups[2].Length == 0) {
-//          patch.start1--;
-//          patch.length1 = 1;
-//        } else if (m.Groups[2].Value == "0") {
-//          patch.length1 = 0;
-//        } else {
-//          patch.start1--;
-//          patch.length1 = Convert.ToInt32(m.Groups[2].Value);
-//        }
+///
+/// Parse a textual representation of patches and return a List of Patch
+/// objects.
+/// @param textline Text representation of patches.
+/// @return List of Patch objects.
+/// @throws ArgumentException If invalid input.
+pub fn patchFromText(allocator: Allocator, text: []const u8) !PatchList {
+    if (text.len == 0) return PatchList{};
+    var patches = PatchList{};
+    var cursor = 0;
+    while (cursor < text.len) {
+        // TODO catch BadPatchString here and print diagnostic
+        const cursor_delta, const patch = try patchFromHeader(allocator, text[cursor..]);
+        cursor += cursor_delta;
+        try patches.append(allocator, patch);
+    }
+}
 
-//        patch.start2 = Convert.ToInt32(m.Groups[3].Value);
-//        if (m.Groups[4].Length == 0) {
-//          patch.start2--;
-//          patch.length2 = 1;
-//        } else if (m.Groups[4].Value == "0") {
-//          patch.length2 = 0;
-//        } else {
-//          patch.start2--;
-//          patch.length2 = Convert.ToInt32(m.Groups[4].Value);
-//        }
-//        textPointer++;
+fn countDigits(text: []const u8) usize {
+    var idx = 0;
+    while (std.ascii.isDigit(text[idx])) : (idx += 1) {}
+    return idx;
+}
 
-//        while (textPointer < text.Length) {
-//          try {
-//            sign = text[textPointer][0];
-//          } catch (IndexOutOfRangeException) {
-//            // Blank line?  Whatever.
-//            textPointer++;
-//            continue;
-//          }
-//          line = text[textPointer].Substring(1);
-//          line = line.Replace("+", "%2b");
-//          line = HttpUtility.UrlDecode(line);
-//          if (sign == '-') {
-//            // Deletion.
-//            patch.diffs.Add(new Diff(Operation.DELETE, line));
-//          } else if (sign == '+') {
-//            // Insertion.
-//            patch.diffs.Add(new Diff(Operation.INSERT, line));
-//          } else if (sign == ' ') {
-//            // Minor equality.
-//            patch.diffs.Add(new Diff(Operation.EQUAL, line));
-//          } else if (sign == '@') {
-//            // Start of next patch.
-//            break;
-//          } else {
-//            // WTF?
-//            throw new ArgumentException(
-//                "Invalid patch mode '" + sign + "' in: " + line);
-//          }
-//          textPointer++;
-//        }
-//      }
-//      return patches;
-//    }
+fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patch } {
+    var patch = Patch{};
+    var cursor: usize = undefined;
+    if (std.mem.eql(u8, text[0..4], PATCH_HEAD)) {
+        // Parse location and length in before text
+        patch.start1 = std.fmt.parseInt(
+            usize,
+            text[4..],
+            10,
+        ) catch return error.BadPatchString;
+        cursor = 4 + countDigits(text[4..]);
+        assert(cursor > 4);
+        if (text[cursor] != ',') {
+            cursor += 1;
+            patch.start1 -= 1;
+            patch.length1 = 1;
+        } else {
+            cursor += 1;
+            patch.length1 = std.fmt.parseInt(
+                usize,
+                text[cursor..],
+                10,
+            ) catch return error.BadPatchString;
+            const delta = countDigits(text[cursor..]);
+            assert(delta > 0);
+            cursor += delta;
+            if (patch.length1 != 0) {
+                patch.start1 -= 1;
+            }
+        }
+    } else return error.BadPatchString;
+    // Parse location and length in after text.
+    if (text[cursor] == ' ' and text[cursor + 1] == '+') {
+        cursor += 2;
+        patch.start2 = std.fmt.parseInt(
+            usize,
+            text[cursor..],
+            10,
+        ) catch return error.BadPatchString;
+        const delta1 = 4 + countDigits(text[4..]);
+        assert(delta1 > 0);
+        cursor += delta1;
+        if (text[cursor] != ',') {
+            cursor += 1;
+            patch.start2 -= 1;
+            patch.length2 = 1;
+        } else {
+            cursor += 1;
+            patch.length2 = std.fmt.parseInt(
+                usize,
+                text[cursor..],
+                10,
+            ) catch return error.BadPatchString;
+            const delta2 = countDigits(text[cursor..]);
+            assert(delta2 > 1);
+            cursor += delta2;
+            if (patch.length2 != 0) {
+                patch.start2 -= 1;
+            }
+        }
+    } else return error.BadPatchString;
+    if (std.mem.eql(u8, text[cursor .. cursor + 4], PATCH_TAIL)) {
+        cursor += 4;
+    } else return error.BadPatchString;
+    // Eat the diffs
+    const patch_lines = std.mem.splitScalar(
+        u8,
+        text[cursor..],
+        '\n',
+    );
+    // splitScalar means blank lines, but we need that to
+    // track the cursor
+    patch_loop: while (patch_lines.next()) |line| {
+        cursor += line.len + 1;
+        if (line.len == 0) continue;
+        // Figure this out TODO
+        //          line = line.Replace("+", "%2b");
+        const diff_line = try uriDecode(allocator, line);
+        switch (line[0]) {
+            '+' => { // Insertion
+                try patch.diffs.append(
+                    allocator,
+                    Diff{
+                        .operation = .insert,
+                        .text = diff_line,
+                    },
+                );
+            },
+            '-' => { // Deletion
+                try patch.diffs.append(
+                    allocator,
+                    Diff{
+                        .operation = .delete,
+                        .text = diff_line,
+                    },
+                );
+            },
+            ' ' => { // Minor equality
+                try patch.diffs.append(
+                    allocator,
+                    Diff{
+                        .operation = .equal,
+                        .text = diff_line,
+                    },
+                );
+            },
+            '@' => { // Start of next patch
+                // back out cursor
+                cursor -= line.len - 1;
+                break :patch_loop;
+            },
+            else => return error.BadPatchString,
+        }
+    } // end while
+    return .{ cursor, patch };
+}
+
+fn uriDecode(allocator: Allocator, line: []const u8) ![]const u8 {
+    // XXX finish the job obvs
+    return allocator.dupe(u8, line);
+}
 
 ///
 /// Borrowed from https://github.com/elerch/aws-sdk-for-zig/blob/master/src/aws_http.zig
