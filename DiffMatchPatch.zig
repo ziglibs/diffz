@@ -378,8 +378,14 @@ fn diffHalfMatch(
 
     // First check if the second quarter is the seed for a half-match.
     const half_match_1 = try dmp.diffHalfMatchInternal(allocator, long_text, short_text, (long_text.len + 3) / 4);
+    errdefer {
+        if (half_match_1) |h_m| h_m.deinit(allocator);
+    }
     // Check again based on the third quarter.
     const half_match_2 = try dmp.diffHalfMatchInternal(allocator, long_text, short_text, (long_text.len + 1) / 2);
+    errdefer {
+        if (half_match_2) |h_m| h_m.deinit(allocator);
+    }
 
     var half_match: ?HalfMatchResult = null;
     if (half_match_1 == null and half_match_2 == null) {
@@ -471,12 +477,14 @@ fn diffHalfMatchInternal(
         errdefer allocator.free(prefix_after);
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
         errdefer allocator.free(suffix_after);
+        const best_common_text = try best_common.toOwnedSlice(allocator);
+        errdefer allocator.free(best_common_text);
         return .{
             .prefix_before = prefix_before,
             .suffix_before = suffix_before,
             .prefix_after = prefix_after,
             .suffix_after = suffix_after,
-            .common_middle = try best_common.toOwnedSlice(allocator),
+            .common_middle = best_common_text,
         };
     } else {
         return null;
@@ -1550,8 +1558,6 @@ test diffHalfMatch {
         .after = "23",
         .expected = null,
     }});
-
-    if (true) return error.SkipZigTest; // TODO
 
     // Single matches
     try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
