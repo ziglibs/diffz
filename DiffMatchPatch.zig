@@ -627,6 +627,7 @@ fn diffBisect(
     // Diff took too long and hit the deadline or
     // number of diffs equals number of characters, no commonality at all.
     var diffs = DiffList{};
+    errdefer deinitDiffList(allocator, &diffs);
     try diffs.ensureUnusedCapacity(allocator, 2);
     diffs.appendAssumeCapacity(Diff.init(
         .delete,
@@ -1279,18 +1280,21 @@ pub fn diffCleanupSemanticLossless(
             if (!std.mem.eql(u8, diffs.items[pointer - 1].text, best_equality_1.items)) {
                 // We have an improvement, save it back to the diff.
                 if (best_equality_1.items.len != 0) {
-                    allocator.free(diffs.items[pointer - 1].text);
+                    const old_text = diffs.items[pointer - 1].text;
                     diffs.items[pointer - 1].text = try allocator.dupe(u8, best_equality_1.items);
+                    allocator.free(old_text);
                 } else {
                     const old_diff = diffs.orderedRemove(pointer - 1);
                     allocator.free(old_diff.text);
                     pointer -= 1;
                 }
-                allocator.free(diffs.items[pointer].text);
+                const old_text1 = diffs.items[pointer].text;
                 diffs.items[pointer].text = try allocator.dupe(u8, best_edit.items);
+                allocator.free(old_text1);
                 if (best_equality_2.items.len != 0) {
-                    allocator.free(diffs.items[pointer + 1].text);
+                    const old_text2 = diffs.items[pointer + 1].text;
                     diffs.items[pointer + 1].text = try allocator.dupe(u8, best_equality_2.items);
+                    allocator.free(old_text2);
                 } else {
                     const old_diff = diffs.orderedRemove(pointer + 1);
                     allocator.free(old_diff.text);
@@ -2023,6 +2027,19 @@ fn testDiffCleanupSemanticLossless(
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
+fn sliceToDiffList(allocator: Allocator, diff_slice: []const Diff) !DiffList {
+    var diff_list = DiffList{};
+    errdefer deinitDiffList(allocator, &diff_list);
+    try diff_list.ensureTotalCapacity(allocator, diff_slice.len);
+    for (diff_slice) |d| {
+        diff_list.appendAssumeCapacity(Diff.init(
+            d.operation,
+            try allocator.dupe(u8, d.text),
+        ));
+    }
+    return diff_list;
+}
+
 test diffCleanupSemanticLossless {
     // Null case
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
@@ -2030,8 +2047,7 @@ test diffCleanupSemanticLossless {
         .expected = &[_]Diff{},
     }});
 
-    if (true) return error.SkipZigTest; // TODO
-
+    //defer deinitDiffList(allocator, &diffs);
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
         .input = &.{
             .{ .operation = .equal, .text = "AAA\r\n\r\nBBB" },
@@ -2178,8 +2194,6 @@ test diffBisect {
             .{ .operation = .insert, .text = "p" },
         },
     }});
-
-    if (true) return error.SkipZigTest; // TODO
 
     // Timeout
     try testing.checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
