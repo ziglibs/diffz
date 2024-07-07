@@ -2144,6 +2144,10 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
         std.ArrayList(u8).init(allocator),
         std.ArrayList(u8).init(allocator),
     };
+    errdefer {
+        allocator.free(text[0]);
+        allocator.free(text[1]);
+    }
 
     for (diffs.items) |myDiff| {
         if (myDiff.operation != .insert) {
