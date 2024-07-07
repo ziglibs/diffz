@@ -131,7 +131,7 @@ fn diffInternal(
     // Check for equality (speedup).
     if (std.mem.eql(u8, before, after)) {
         var diffs = DiffList{};
-
+        errdefer deinitDiffList(allocator, &diffs);
         if (before.len != 0) {
             try diffs.ensureUnusedCapacity(allocator, 1);
             diffs.appendAssumeCapacity(Diff.init(
@@ -2224,8 +2224,6 @@ fn testDiff(
 }
 
 test diff {
-    if (true) return error.SkipZigTest; // TODO
-
     const this: DiffMatchPatch = .{ .diff_timeout = 0 };
 
     //  Null case.
@@ -2597,8 +2595,6 @@ test diffCleanupSemantic {
         },
     }});
 
-    if (true) return error.SkipZigTest; // TODO
-
     // Word boundaries
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
         .input = &.{
@@ -2625,49 +2621,51 @@ test diffCleanupSemantic {
         },
     }});
 
-    // Overlap elimination
-    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
-        .input = &.{
-            .{ .operation = .delete, .text = "abcxxx" },
-            .{ .operation = .insert, .text = "xxxdef" },
-        },
-        .expected = &.{
-            .{ .operation = .delete, .text = "abc" },
-            .{ .operation = .equal, .text = "xxx" },
-            .{ .operation = .insert, .text = "def" },
-        },
-    }});
+    if (false) { // TODO #23 This test needs to dupe its data
+        // Overlap elimination
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+            .input = &.{
+                .{ .operation = .delete, .text = "abcxxx" },
+                .{ .operation = .insert, .text = "xxxdef" },
+            },
+            .expected = &.{
+                .{ .operation = .delete, .text = "abc" },
+                .{ .operation = .equal, .text = "xxx" },
+                .{ .operation = .insert, .text = "def" },
+            },
+        }});
 
-    // Reverse overlap elimination
-    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
-        .input = &.{
-            .{ .operation = .delete, .text = "xxxabc" },
-            .{ .operation = .insert, .text = "defxxx" },
-        },
-        .expected = &.{
-            .{ .operation = .insert, .text = "def" },
-            .{ .operation = .equal, .text = "xxx" },
-            .{ .operation = .delete, .text = "abc" },
-        },
-    }});
+        // Reverse overlap elimination
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+            .input = &.{
+                .{ .operation = .delete, .text = "xxxabc" },
+                .{ .operation = .insert, .text = "defxxx" },
+            },
+            .expected = &.{
+                .{ .operation = .insert, .text = "def" },
+                .{ .operation = .equal, .text = "xxx" },
+                .{ .operation = .delete, .text = "abc" },
+            },
+        }});
 
-    // Two overlap eliminations
-    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
-        .input = &.{
-            .{ .operation = .delete, .text = "abcd1212" },
-            .{ .operation = .insert, .text = "1212efghi" },
-            .{ .operation = .equal, .text = "----" },
-            .{ .operation = .delete, .text = "A3" },
-            .{ .operation = .insert, .text = "3BC" },
-        },
-        .expected = &.{
-            .{ .operation = .delete, .text = "abcd" },
-            .{ .operation = .equal, .text = "1212" },
-            .{ .operation = .insert, .text = "efghi" },
-            .{ .operation = .equal, .text = "----" },
-            .{ .operation = .delete, .text = "A" },
-            .{ .operation = .equal, .text = "3" },
-            .{ .operation = .insert, .text = "BC" },
-        },
-    }});
+        // Two overlap eliminations
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+            .input = &.{
+                .{ .operation = .delete, .text = "abcd1212" },
+                .{ .operation = .insert, .text = "1212efghi" },
+                .{ .operation = .equal, .text = "----" },
+                .{ .operation = .delete, .text = "A3" },
+                .{ .operation = .insert, .text = "3BC" },
+            },
+            .expected = &.{
+                .{ .operation = .delete, .text = "abcd" },
+                .{ .operation = .equal, .text = "1212" },
+                .{ .operation = .insert, .text = "efghi" },
+                .{ .operation = .equal, .text = "----" },
+                .{ .operation = .delete, .text = "A" },
+                .{ .operation = .equal, .text = "3" },
+                .{ .operation = .insert, .text = "BC" },
+            },
+        }});
+    }
 }
