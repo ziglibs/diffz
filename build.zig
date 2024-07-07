@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const step_tests = b.addRunArtifact(tests);
+    step_tests.has_side_effects = true;
 
     b.step("test", "Run diffz tests").dependOn(&step_tests.step);
 

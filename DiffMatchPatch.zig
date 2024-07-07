@@ -2407,8 +2407,7 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
 // TODO other makePatch methods...
 
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
-/// is the patched text, the second of which is a PatchList, which may be empty,
-/// containing patches which were not successfully applied.
+/// is the patched text, the second of which is...
 ///
 /// TODO I'm just going to return a boolean saying whether all patches
 /// were successful.  Rethink this at some point.
@@ -2697,7 +2696,7 @@ fn patchSplitMax(allocator: Allocator, patches: PatchList) !PatchList {
                 try patches.insert(allocator, x, patch);
             }
         }
-        // free final precontext
+        // Free final precontext.
         allocator.free(precontext);
     }
 }
@@ -2736,7 +2735,7 @@ fn patchAddPadding(allocator: Allocator, patches: PatchList) ![]const u8 {
             },
         );
         patch.start1 -= pad_len;
-        // OG code says "Should be 0" but this statement is not justified
+        // OG code says "Should be 0" but this statement is not justified...
         assert(patch.start1 == 0);
         patch.start2 -= pad_len;
         assert(patch.start2 == 0);
@@ -2919,14 +2918,14 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         text[cursor..],
         '\n',
     );
-    // splitScalar means blank lines, but we need that to
-    // track the cursor
+    // `splitScalar` means blank lines, but we need that to
+    // track the cursor.
     patch_loop: while (patch_lines.next()) |line| {
         cursor += line.len + 1;
         if (line.len == 0) continue;
-        // Figure this out TODO
-        //          line = line.Replace("+", "%2b");
-        const diff_line = try uriDecode(allocator, line);
+        // Microsoft encodes spaces as +, we don't, so we don't need this:
+        // line = line.Replace("+", "%2b");
+        const diff_line = try uriDecode(allocator, line) catch return error.BadPatchString;
         switch (line[0]) {
             '+' => { // Insertion
                 try patch.diffs.append(
@@ -2966,9 +2965,29 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
     return .{ cursor, patch };
 }
 
+/// Decode our URI-esque escaping
 fn uriDecode(allocator: Allocator, line: []const u8) ![]const u8 {
-    // XXX finish the job obvs
-    return allocator.dupe(u8, line);
+    if (std.mem.indexOf(u8, line, '%')) |first| {
+        // Text to decode.
+        // Result will always be shorter than line:
+        var new_line = try std.ArrayList(u8).initCapacity(allocator, line.len);
+        defer new_line.init;
+        try new_line.appendSlice(line[0..first]);
+        var out_buf: [1]u8 = .{0};
+        var codeunit = try std.fmt.hexToBytes(&out_buf, line[first + 1 .. first + 3]);
+        try new_line.append(codeunit[0]);
+        var cursor = first + 3;
+        while (std.mem.indexOf(u8, line[cursor..], '%')) |next| {
+            codeunit = try std.fmt.hexToBytes(&out_buf, line[next + 1 .. next + 3]);
+            try new_line.append(codeunit[0]);
+            cursor = next + 3;
+        } else {
+            try new_line.appendSlice(line[cursor..]);
+        }
+        return new_line.toOwnedSlice();
+    } else {
+        return allocator.dupe(u8, line);
+    }
 }
 
 ///
