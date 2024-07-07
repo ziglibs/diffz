@@ -862,13 +862,12 @@ fn diffCharsToLines(
     defer text.deinit(allocator);
 
     for (diffs) |*d| {
-        text.items.len = 0;
         var j: usize = 0;
         while (j < d.text.len) : (j += 1) {
             try text.appendSlice(allocator, line_array[d.text[j]]);
         }
         allocator.free(d.text);
-        d.text = try allocator.dupe(u8, text.items);
+        d.text = try text.toOwnedSlice(allocator);
     }
 }
 
@@ -913,16 +912,15 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                             {
                                 const ii = pointer - count_delete - count_insert - 1;
                                 var nt = try allocator.alloc(u8, diffs.items[ii].text.len + common_length);
-
                                 const ot = diffs.items[ii].text;
                                 defer allocator.free(ot);
                                 @memcpy(nt[0..ot.len], ot);
                                 @memcpy(nt[ot.len..], text_insert.items[0..common_length]);
                                 diffs.items[ii].text = nt;
                             } else {
+                                try diffs.ensureUnusedCapacity(allocator, 1);
                                 const text = try allocator.dupe(u8, text_insert.items[0..common_length]);
-                                errdefer allocator.free(text);
-                                try diffs.insert(allocator, 0, Diff.init(.equal, text));
+                                diffs.insertAssumeCapacity(0, Diff.init(.equal, text));
                                 pointer += 1;
                             }
                             try text_insert.replaceRange(allocator, 0, common_length, &.{});
@@ -933,11 +931,11 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                         common_length = diffCommonSuffix(text_insert.items, text_delete.items);
                         if (common_length != 0) {
                             const old_text = diffs.items[pointer].text;
-                            defer allocator.free(old_text);
                             diffs.items[pointer].text = try std.mem.concat(allocator, u8, &.{
                                 text_insert.items[text_insert.items.len - common_length ..],
                                 old_text,
                             });
+                            defer allocator.free(old_text);
                             text_insert.items.len -= common_length;
                             text_delete.items.len -= common_length;
                         }
@@ -1004,38 +1002,38 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
         {
             // This is a single edit surrounded by equalities.
             if (std.mem.endsWith(u8, diffs.items[pointer].text, diffs.items[pointer - 1].text)) {
+                const old_pt = diffs.items[pointer].text;
                 const pt = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer].text[0 .. diffs.items[pointer].text.len -
                         diffs.items[pointer - 1].text.len],
                 });
+                defer allocator.free(old_pt);
+                diffs.items[pointer].text = pt;
+                const old_pt1t = diffs.items[pointer + 1].text;
                 const p1t = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
-                const old_pt = diffs.items[pointer].text;
-                defer allocator.free(old_pt);
-                const old_pt1t = diffs.items[pointer + 1].text;
                 defer allocator.free(old_pt1t);
-                diffs.items[pointer].text = pt;
                 diffs.items[pointer + 1].text = p1t;
                 freeRangeDiffList(allocator, diffs, pointer - 1, 1);
                 try diffs.replaceRange(allocator, pointer - 1, 1, &.{});
                 changes = true;
             } else if (std.mem.startsWith(u8, diffs.items[pointer].text, diffs.items[pointer + 1].text)) {
+                const old_ptm1 = diffs.items[pointer - 1].text;
                 const pm1t = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
+                defer allocator.free(old_ptm1);
+                diffs.items[pointer - 1].text = pm1t;
+                const old_pt = diffs.items[pointer].text;
+                defer allocator.free(old_pt);
                 const pt = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer].text[diffs.items[pointer + 1].text.len..],
                     diffs.items[pointer + 1].text,
                 });
-                const old_ptm1 = diffs.items[pointer - 1].text;
-                defer allocator.free(old_ptm1);
-                const old_pt = diffs.items[pointer].text;
-                defer allocator.free(old_pt);
-                diffs.items[pointer - 1].text = pm1t;
                 diffs.items[pointer].text = pt;
                 freeRangeDiffList(allocator, diffs, pointer + 1, 1);
                 try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
@@ -1777,14 +1775,16 @@ fn testDiffCharsToLines(
 }
 
 test diffCharsToLines {
-    if (true) return error.SkipZigTest; // TODO
-
     // Convert chars up to lines.
+    var diff_list = DiffList{};
+    defer deinitDiffList(testing.allocator, &diff_list);
+    try diff_list.ensureTotalCapacity(testing.allocator, 2);
+    diff_list.appendSliceAssumeCapacity(&.{
+        Diff.init(.equal, try testing.allocator.dupe(u8, "\u{0001}\u{0002}\u{0001}")),
+        Diff.init(.insert, try testing.allocator.dupe(u8, "\u{0002}\u{0001}\u{0002}")),
+    });
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCharsToLines, .{.{
-        .diffs = &.{
-            .{ .operation = .equal, .text = "\u{0001}\u{0002}\u{0001}" },
-            .{ .operation = .insert, .text = "\u{0002}\u{0001}\u{0002}" },
-        },
+        .diffs = diff_list.items,
         .line_array = &[_][]const u8{
             "",
             "alpha\n",
@@ -1900,8 +1900,6 @@ test diffCleanupMerge {
         },
     }});
 
-    if (true) return error.SkipZigTest; // TODO
-
     // Prefix and suffix detection with equalities
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
         .input = &.{
@@ -1933,17 +1931,19 @@ test diffCleanupMerge {
     }});
 
     // Slide edit right
-    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
-        .input = &.{
-            .{ .operation = .equal, .text = "c" },
-            .{ .operation = .insert, .text = "ab" },
-            .{ .operation = .equal, .text = "a" },
-        },
-        .expected = &.{
-            .{ .operation = .equal, .text = "ca" },
-            .{ .operation = .insert, .text = "ba" },
-        },
-    }});
+    if (false) { // TODO #23 This test needs to dupe its data
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+            .input = &.{
+                .{ .operation = .equal, .text = "c" },
+                .{ .operation = .insert, .text = "ab" },
+                .{ .operation = .equal, .text = "a" },
+            },
+            .expected = &.{
+                .{ .operation = .equal, .text = "ca" },
+                .{ .operation = .insert, .text = "ba" },
+            },
+        }});
+    }
 
     // Slide edit left recursive
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
@@ -1960,20 +1960,22 @@ test diffCleanupMerge {
         },
     }});
 
-    // Slide edit right recursive
-    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
-        .input = &.{
-            .{ .operation = .equal, .text = "x" },
-            .{ .operation = .delete, .text = "ca" },
-            .{ .operation = .equal, .text = "c" },
-            .{ .operation = .delete, .text = "b" },
-            .{ .operation = .equal, .text = "a" },
-        },
-        .expected = &.{
-            .{ .operation = .equal, .text = "xca" },
-            .{ .operation = .delete, .text = "cba" },
-        },
-    }});
+    if (false) { // TODO #23 This test needs to dupe its data
+        // Slide edit right recursive
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+            .input = &.{
+                .{ .operation = .equal, .text = "x" },
+                .{ .operation = .delete, .text = "ca" },
+                .{ .operation = .equal, .text = "c" },
+                .{ .operation = .delete, .text = "b" },
+                .{ .operation = .equal, .text = "a" },
+            },
+            .expected = &.{
+                .{ .operation = .equal, .text = "xca" },
+                .{ .operation = .delete, .text = "cba" },
+            },
+        }});
+    }
 
     // Empty merge
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
