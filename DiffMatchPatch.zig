@@ -131,8 +131,13 @@ fn diffInternal(
     // Check for equality (speedup).
     if (std.mem.eql(u8, before, after)) {
         var diffs = DiffList{};
+
         if (before.len != 0) {
-            try diffsAppend(allocator, &diffs, .equal, before);
+            try diffs.ensureUnusedCapacity(allocator, 1);
+            diffs.appendAssumeCapacity(Diff.init(
+                .equal,
+                try allocator.dupe(u8, before),
+            ));
         }
         return diffs;
     }
@@ -154,11 +159,20 @@ fn diffInternal(
     errdefer deinitDiffList(allocator, &diffs);
 
     // Restore the prefix and suffix.
+
     if (common_prefix.len != 0) {
-        try diffsInsert(allocator, &diffs, 0, .equal, common_prefix);
+        try diffs.ensureUnusedCapacity(allocator, 1);
+        diffs.insertAssumeCapacity(0, Diff.init(
+            .equal,
+            try allocator.dupe(u8, common_prefix),
+        ));
     }
     if (common_suffix.len != 0) {
-        try diffsAppend(allocator, &diffs, .equal, common_suffix);
+        try diffs.ensureUnusedCapacity(allocator, 1);
+        diffs.appendAssumeCapacity(Diff.init(
+            .equal,
+            try allocator.dupe(u8, common_suffix),
+        ));
     }
 
     try diffCleanupMerge(allocator, &diffs);
@@ -213,13 +227,21 @@ fn diffCompute(
 
     if (before.len == 0) {
         // Just add some text (speedup).
-        try diffsAppend(allocator, &diffs, .insert, after);
+        try diffs.ensureUnusedCapacity(allocator, 1);
+        diffs.appendAssumeCapacity(Diff.init(
+            .insert,
+            try allocator.dupe(u8, after),
+        ));
         return diffs;
     }
 
     if (after.len == 0) {
         // Just delete some text (speedup).
-        try diffsAppend(allocator, &diffs, .delete, before);
+        try diffs.ensureUnusedCapacity(allocator, 1);
+        diffs.appendAssumeCapacity(Diff.init(
+            .delete,
+            try allocator.dupe(u8, before),
+        ));
         return diffs;
     }
 
@@ -232,17 +254,34 @@ fn diffCompute(
             .delete
         else
             .insert;
-        try diffsAppend(allocator, &diffs, op, long_text[0..index]);
-        try diffsAppend(allocator, &diffs, .equal, short_text);
-        try diffsAppend(allocator, &diffs, op, long_text[index + short_text.len ..]);
+        try diffs.ensureUnusedCapacity(allocator, 3);
+        diffs.appendAssumeCapacity(Diff{
+            .operation = op,
+            .text = try allocator.dupe(u8, long_text[0..index]),
+        });
+        diffs.appendAssumeCapacity(Diff{
+            .operation = .equal,
+            .text = try allocator.dupe(u8, short_text),
+        });
+        diffs.appendAssumeCapacity(Diff{
+            .operation = op,
+            .text = try allocator.dupe(u8, long_text[index + short_text.len ..]),
+        });
         return diffs;
     }
 
     if (short_text.len == 1) {
         // Single character string.
         // After the previous speedup, the character can't be an equality.
-        try diffsAppend(allocator, &diffs, .delete, before);
-        try diffsAppend(allocator, &diffs, .insert, after);
+        try diffs.ensureUnusedCapacity(allocator, 2);
+        diffs.appendAssumeCapacity(Diff{
+            .operation = .delete,
+            .text = try allocator.dupe(u8, before),
+        });
+        diffs.appendAssumeCapacity(Diff{
+            .operation = .insert,
+            .text = try allocator.dupe(u8, after),
+        });
         return diffs;
     }
 
@@ -276,7 +315,11 @@ fn diffCompute(
 
         // Merge the results.
         diffs = diffs_a;
-        try diffsAppend(allocator, &diffs, .equal, half_match.common_middle);
+        try diffs.ensureUnusedCapacity(allocator, 1);
+        diffs.appendAssumeCapacity(Diff.init(.equal, try allocator.dupe(
+            u8,
+            half_match.common_middle,
+        )));
         try diffs.appendSlice(allocator, diffs_b.items);
         return diffs;
     }
@@ -574,8 +617,15 @@ fn diffBisect(
     // Diff took too long and hit the deadline or
     // number of diffs equals number of characters, no commonality at all.
     var diffs = DiffList{};
-    try diffsAppend(allocator, &diffs, .delete, before);
-    try diffsAppend(allocator, &diffs, .insert, after);
+    try diffs.ensureUnusedCapacity(allocator, 2);
+    diffs.appendAssumeCapacity(Diff.init(
+        .delete,
+        try allocator.dupe(u8, before),
+    ));
+    diffs.appendAssumeCapacity(Diff.init(
+        .insert,
+        try allocator.dupe(u8, after),
+    ));
     return diffs;
 }
 
@@ -890,11 +940,19 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     }
 
                     if (text_delete.items.len != 0) {
-                        try diffsInsert(allocator, diffs, pointer, .delete, text_delete.items);
+                        try diffs.ensureUnusedCapacity(allocator, 1);
+                        diffs.insertAssumeCapacity(pointer, Diff.init(
+                            .delete,
+                            try allocator.dupe(u8, text_delete.items),
+                        ));
                         pointer += 1;
                     }
                     if (text_insert.items.len != 0) {
-                        try diffsInsert(allocator, diffs, pointer, .insert, text_insert.items);
+                        try diffs.ensureUnusedCapacity(allocator, 1);
+                        diffs.insertAssumeCapacity(pointer, Diff.init(
+                            .insert,
+                            try allocator.dupe(u8, text_insert.items),
+                        ));
                         pointer += 1;
                     }
                     pointer += 1;
@@ -1020,12 +1078,13 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 (last_equality.?.len <= @max(length_insertions2, length_deletions2)))
             {
                 // Duplicate record.
-                try diffsInsert(
-                    allocator,
-                    diffs,
+                try diffs.ensureUnusedCapacity(allocator, 1);
+                diffs.insertAssumeCapacity(
                     @intCast(equalities.items[equalities.items.len - 1]),
-                    .delete,
-                    last_equality.?,
+                    Diff.init(
+                        .delete,
+                        try allocator.dupe(u8, last_equality.?),
+                    ),
                 );
                 // Change second copy to insert.
                 diffs.items[@intCast(equalities.items[equalities.items.len - 1] + 1)].operation = .insert;
@@ -1074,13 +1133,14 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Overlap found.
                     // Insert an equality and trim the surrounding edits.
                     defer allocator.free(deletion);
-                    defer allocator.free(insertion);
-                    try diffsInsert(
-                        allocator,
-                        diffs,
+
+                    try diffs.ensureUnusedCapacity(allocator, 1);
+                    diffs.insertAssumeCapacity(
                         @intCast(pointer),
-                        .equal,
-                        insertion[0..overlap_length1],
+                        Diff.init(
+                            .equal,
+                            try allocator.dupe(u8, insertion[0..overlap_length1]),
+                        ),
                     );
                     diffs.items[@intCast(pointer - 1)].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
@@ -1096,12 +1156,13 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Insert an equality and swap and trim the surrounding edits.
                     defer allocator.free(deletion);
                     defer allocator.free(insertion);
-                    try diffsInsert(
-                        allocator,
-                        diffs,
+                    try diffs.ensureUnusedCapacity(allocator, 1);
+                    diffs.insertAssumeCapacity(
                         @intCast(pointer),
-                        .equal,
-                        deletion[0..overlap_length2],
+                        Diff.init(
+                            .equal,
+                            try allocator.dupe(u8, deletion[0..overlap_length2]),
+                        ),
                     );
                     diffs.items[@intCast(pointer - 1)].operation = .insert;
                     const new_minus = try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
@@ -1342,12 +1403,13 @@ pub fn diffCleanupEfficiency(
                 ((if (pre_ins) 1 else 0) + (if (pre_del) 1 else 0) + (if (post_ins) 1 else 0) + (if (post_del) 1 else 0)) == 3)))
             {
                 // Duplicate record.
-                try diffsInsert(
-                    allocator,
-                    &diffs,
+                try diffs.ensureUnusedCapacity(allocator, 1);
+                diffs.insertAssumeCapacity(
                     equalities.items[equalities.items.len - 1],
-                    .delete,
-                    last_equality,
+                    Diff.init(
+                        .delete,
+                        try allocator.dupe(u8, last_equality),
+                    ),
                 );
                 // Change second copy to insert.
                 diffs.items[equalities.items[equalities.items.len - 1] + 1].operation = .insert;
@@ -1423,18 +1485,6 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
             length += 1;
         }
     }
-}
-
-fn diffsAppend(allocator: Allocator, diffs: *DiffList, op: Diff.Operation, text: []const u8) !void {
-    const new_text = try allocator.dupe(u8, text);
-    errdefer allocator.free(new_text);
-    try diffs.append(allocator, Diff{ .operation = op, .text = new_text });
-}
-
-fn diffsInsert(allocator: Allocator, diffs: *DiffList, index: usize, op: Diff.Operation, text: []const u8) !void {
-    const new_text = try allocator.dupe(u8, text);
-    errdefer allocator.free(new_text);
-    try diffs.insert(allocator, index, Diff{ .operation = op, .text = new_text });
 }
 
 // DONE [✅]: Allocate all text in diffs to
