@@ -11,9 +11,7 @@ const DiffList = ArrayListUnmanaged(Diff);
 pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
     defer diffs.deinit(allocator);
     for (diffs.items) |d| {
-        if (d.text.len > 0) {
-            allocator.free(d.text);
-        }
+        allocator.free(d.text);
     }
 }
 
