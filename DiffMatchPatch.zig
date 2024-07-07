@@ -255,18 +255,18 @@ fn diffCompute(
         else
             .insert;
         try diffs.ensureUnusedCapacity(allocator, 3);
-        diffs.appendAssumeCapacity(Diff{
-            .operation = op,
-            .text = try allocator.dupe(u8, long_text[0..index]),
-        });
-        diffs.appendAssumeCapacity(Diff{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, short_text),
-        });
-        diffs.appendAssumeCapacity(Diff{
-            .operation = op,
-            .text = try allocator.dupe(u8, long_text[index + short_text.len ..]),
-        });
+        diffs.appendAssumeCapacity(Diff.init(
+            op,
+            try allocator.dupe(u8, long_text[0..index]),
+        ));
+        diffs.appendAssumeCapacity(Diff.init(
+            .equal,
+            try allocator.dupe(u8, short_text),
+        ));
+        diffs.appendAssumeCapacity(Diff.init(
+            op,
+            try allocator.dupe(u8, long_text[index + short_text.len ..]),
+        ));
         return diffs;
     }
 
@@ -274,14 +274,14 @@ fn diffCompute(
         // Single character string.
         // After the previous speedup, the character can't be an equality.
         try diffs.ensureUnusedCapacity(allocator, 2);
-        diffs.appendAssumeCapacity(Diff{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, before),
-        });
-        diffs.appendAssumeCapacity(Diff{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, after),
-        });
+        diffs.appendAssumeCapacity(Diff.init(
+            .delete,
+            try allocator.dupe(u8, before),
+        ));
+        diffs.appendAssumeCapacity(Diff.init(
+            .insert,
+            try allocator.dupe(u8, after),
+        ));
         return diffs;
     }
 
@@ -316,10 +316,12 @@ fn diffCompute(
         // Merge the results.
         diffs = diffs_a;
         try diffs.ensureUnusedCapacity(allocator, 1);
-        diffs.appendAssumeCapacity(Diff.init(.equal, try allocator.dupe(
-            u8,
-            half_match.common_middle,
-        )));
+        diffs.appendAssumeCapacity(
+            Diff.init(.equal, try allocator.dupe(
+                u8,
+                half_match.common_middle,
+            )),
+        );
         try diffs.appendSlice(allocator, diffs_b.items);
         return diffs;
     }
