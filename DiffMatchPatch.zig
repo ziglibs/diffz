@@ -1133,7 +1133,7 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Overlap found.
                     // Insert an equality and trim the surrounding edits.
                     defer allocator.free(deletion);
-
+                    defer allocator.free(insertion);
                     try diffs.ensureUnusedCapacity(allocator, 1);
                     diffs.insertAssumeCapacity(
                         @intCast(pointer),
