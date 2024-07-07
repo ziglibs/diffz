@@ -254,6 +254,14 @@ fn diffCompute(
             deadline,
         );
         defer diffs_b.deinit(allocator);
+        // we have to deinit regardless, so deinitDiffList would be
+        // a double free:
+        errdefer {
+            for (diffs_b.items) |d| {
+                allocator.free(d.text);
+            }
+        }
+        (deinitDiffList(allocator, diffs_b));
 
         // Merge the results.
         diffs = diffs_a;
@@ -585,11 +593,15 @@ fn diffBisectSplit(
     // Compute both diffs serially.
     var diffs = try dmp.diffInternal(allocator, text1a, text2a, false, deadline);
     errdefer deinitDiffList(allocator, &diffs);
-    var diffsb = try dmp.diffInternal(allocator, text1b, text2b, false, deadline);
+    var diffs_b = try dmp.diffInternal(allocator, text1b, text2b, false, deadline);
     // Free the list, but not the contents:
-    defer diffsb.deinit(allocator);
-
-    try diffs.appendSlice(allocator, diffsb.items);
+    defer diffs_b.deinit(allocator);
+    errdefer {
+        for (diffs_b.items) |d| {
+            allocator.free(d.text);
+        }
+    }
+    try diffs.appendSlice(allocator, diffs_b.items);
     return diffs;
 }
 
