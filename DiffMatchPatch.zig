@@ -261,7 +261,6 @@ fn diffCompute(
                 allocator.free(d.text);
             }
         }
-        (deinitDiffList(allocator, diffs_b));
 
         // Merge the results.
         diffs = diffs_a;
