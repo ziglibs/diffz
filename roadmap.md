@@ -1,6 +1,7 @@
 # Roadmap
 
-- [ ] Port patch
+- [✅] Port patch
+    - [ ] Add DiffMatchPatch object instead of @This() (which won't work)
 - [✅] Port match
 - [ ] Port test coverage
 - [ ] Diff stream

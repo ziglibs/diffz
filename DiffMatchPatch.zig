@@ -2394,7 +2394,6 @@ fn makePatchInternal(
     }
 }
 
-///
 /// Compute a list of patches to turn text1 into text2.
 /// text2 is not provided, diffs are the delta between text1 and text2.
 ///
@@ -2404,7 +2403,19 @@ pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !Patch
     try makePatchInternal(allocator, text, diffs, .copy);
 }
 
-// TODO other makePatch methods...
+pub fn makePatchFromTexts(allocator: Allocator, text1: []const u8, text2: []const u8) !PatchList {
+    const diffs = try diff(@This(), allocator, text1, text2, true);
+    if (diffs.items.len > 2) {
+        try diffCleanupSemantic(diffs);
+        try diffCleanupEfficiency(diffs);
+    }
+    return try makePatchInternal(allocator, text1, diffs, .own);
+}
+
+pub fn makePatchFromDiffs(allocator: Allocator, diffs: DiffList) !PatchList {
+    const text1 = try diffBeforeText(allocator, diffs);
+    return try makePatch(allocator, text1, diffs, .copy);
+}
 
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
 /// is the patched text, the second of which is...
@@ -2436,7 +2447,6 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
     text_array.appendSlice(og_text);
     text_array.appendSlice(null_padding);
     try patchSplitMax(allocator, patches);
-    //
     // delta keeps track of the offset between the expected and actual
     // location of the previous patch.  If there are patches expected at
     // positions 10 and 20, but the first patch was found at 12, delta is 2
@@ -2549,7 +2559,7 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
 
 // Look through the patches and break up any which are longer than the
 // maximum limit of the match algorithm.
-// Intended to be called only from within patch_apply.
+// Intended to be called only from within patchApply.
 // @param patches List of Patch objects.
 fn patchSplitMax(allocator: Allocator, patches: PatchList) !PatchList {
     const patch_size = @This().match_max_bits;
@@ -2702,7 +2712,7 @@ fn patchSplitMax(allocator: Allocator, patches: PatchList) !PatchList {
 }
 
 /// Add some padding on text start and end so that edges can match something.
-/// Intended to be called only from within patch_apply.
+/// Intended to be called only from within patchApply.
 /// @param patches Array of Patch objects.
 /// @return The padding string added to each side.
 fn patchAddPadding(allocator: Allocator, patches: PatchList) ![]const u8 {
@@ -2786,7 +2796,6 @@ fn patchAddPadding(allocator: Allocator, patches: PatchList) ![]const u8 {
     return paddingcodes.toOwnedSlice();
 }
 
-///
 /// Given an array of patches, return another array that is identical.
 /// @param patches Array of Patch objects.
 /// @return Array of Patch objects.
@@ -2804,11 +2813,9 @@ fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
     return new_patches;
 }
 
-///
 /// Take a list of patches and return a textual representation.
 /// @param patches List of Patch objects.
 /// @return Text representation of patches.
-///
 pub fn patchToText(allocator: Allocator, patches: PatchList) ![]const u8 {
     const text_array = try std.ArrayList(u8).init(allocator);
     defer text_array.deinit();
@@ -2824,7 +2831,6 @@ pub fn writePatch(writer: anytype, patches: PatchList) !void {
     }
 }
 
-///
 /// Parse a textual representation of patches and return a List of Patch
 /// objects.
 /// @param textline Text representation of patches.
@@ -2925,7 +2931,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         if (line.len == 0) continue;
         // Microsoft encodes spaces as +, we don't, so we don't need this:
         // line = line.Replace("+", "%2b");
-        const diff_line = try uriDecode(allocator, line) catch return error.BadPatchString;
+        const diff_line = try decodeUri(allocator, line) catch return error.BadPatchString;
         switch (line[0]) {
             '+' => { // Insertion
                 try patch.diffs.append(
@@ -2966,7 +2972,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
 }
 
 /// Decode our URI-esque escaping
-fn uriDecode(allocator: Allocator, line: []const u8) ![]const u8 {
+fn decodeUri(allocator: Allocator, line: []const u8) ![]const u8 {
     if (std.mem.indexOf(u8, line, '%')) |first| {
         // Text to decode.
         // Result will always be shorter than line:
