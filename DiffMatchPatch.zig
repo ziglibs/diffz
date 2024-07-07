@@ -58,6 +58,18 @@ pub const Diff = struct {
     pub fn eql(a: Diff, b: Diff) bool {
         return a.operation == b.operation and std.mem.eql(u8, a.text, b.text);
     }
+
+    test eql {
+        const equal_a: Diff = .{ .operation = .equal, .text = "a" };
+        const insert_a: Diff = .{ .operation = .insert, .text = "a" };
+        const equal_b: Diff = .{ .operation = .equal, .text = "b" };
+        const delete_b: Diff = .{ .operation = .delete, .text = "b" };
+
+        try testing.expect(equal_a.eql(equal_a));
+        try testing.expect(!insert_a.eql(equal_a));
+        try testing.expect(!equal_a.eql(equal_b));
+        try testing.expect(!equal_a.eql(delete_b));
+    }
 };
 
 /// Number of milliseconds to map a diff before giving up (0 for infinity).
@@ -1559,7 +1571,7 @@ test diffHalfMatch {
 }
 
 test diffLinesToChars {
-    const allocator = std.testing.allocator;
+    const allocator = testing.allocator;
     // Convert lines down to characters.
     var tmp_array_list = std.ArrayList([]const u8).init(allocator);
     defer tmp_array_list.deinit();
@@ -1633,26 +1645,14 @@ test diffLinesToChars {
 
 test diffCharsToLines {
     const allocator = std.testing.allocator;
-    const equal_a = Diff.init(.equal, try allocator.dupe(u8, "a"));
-    defer allocator.free(equal_a.text);
-    const insert_a = Diff.init(.insert, try allocator.dupe(u8, "a"));
-    defer allocator.free(insert_a.text);
-    const equal_b = Diff.init(.equal, try allocator.dupe(u8, "b"));
-    defer allocator.free(equal_b.text);
-    const delete_b = Diff.init(.delete, try allocator.dupe(u8, "b"));
-    defer allocator.free(delete_b.text);
-    try testing.expect(equal_a.eql(equal_a));
-    try testing.expect(!insert_a.eql(equal_a));
-    try testing.expect(!equal_a.eql(equal_b));
-    try testing.expect(!equal_a.eql(delete_b));
 
     // Convert chars up to lines.
-    var diffs = DiffList{};
+    var diffs = try DiffList.initCapacity(allocator, 2);
     defer deinitDiffList(allocator, &diffs);
-    try diffs.appendSlice(allocator, &.{
-        Diff{ .operation = .equal, .text = try allocator.dupe(u8, "\u{0001}\u{0002}\u{0001}") },
-        Diff{ .operation = .insert, .text = try allocator.dupe(u8, "\u{0002}\u{0001}\u{0002}") },
-    });
+
+    diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "\u{0001}\u{0002}\u{0001}") });
+    diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "\u{0002}\u{0001}\u{0002}") });
+
     var tmp_vector = std.ArrayList([]const u8).init(allocator);
     defer tmp_vector.deinit();
     try tmp_vector.append("");
@@ -1660,437 +1660,385 @@ test diffCharsToLines {
     try tmp_vector.append("beta\n");
     try diffCharsToLines(allocator, diffs.items, tmp_vector.items);
 
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        Diff.init(.equal, "alpha\nbeta\nalpha\n"),
-        Diff.init(.insert, "beta\nalpha\nbeta\n"),
-    }), diffs.items);
+    try testing.expectEqualDeep(&[_]Diff{
+        .{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
+        .{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
+    }, diffs.items);
 
     // TODO: Implement exhaustive tests
 }
 
 test diffCleanupMerge {
-    const allocator = std.testing.allocator;
+    const allocator = testing.allocator;
     // Cleanup a messy diff.
-    var diffs = DiffList{};
-    defer deinitDiffList(allocator, &diffs);
 
-    try testing.expectEqualDeep(
-        @as([]const Diff, &[0]Diff{}),
-        diffs.items,
-    ); // Null case
+    {
+        // No change case
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
 
-    try diffs.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "b"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "c"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } }), diffs.items); // No change case
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "c") });
 
-    var diffs2 = DiffList{};
-    defer deinitDiffList(allocator, &diffs2);
-    try diffs2.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "b"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "c"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs2);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .equal, .text = "abc" },
-    }), diffs2.items); // Merge equalities
+        try diffCleanupMerge(allocator, &diffs);
+        try diffCleanupMerge(allocator, &diffs);
+        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } }), diffs.items); // No change case
+        try diffCleanupMerge(allocator, &diffs);
+        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } }), diffs.items); // No change case
 
-    var diffs3 = DiffList{};
-    defer deinitDiffList(allocator, &diffs3);
-    try diffs3.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "b"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "c"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs3);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .delete, .text = "abc" },
-    }), diffs3.items); // Merge deletions
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "b" },
+            .{ .operation = .insert, .text = "c" },
+        }, diffs.items);
+    }
 
-    var diffs4 = DiffList{};
-    defer deinitDiffList(allocator, &diffs4);
-    try diffs4.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "b"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "c"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs4);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .insert, .text = "abc" },
-    }), diffs4.items); // Merge insertions
+    {
+        // Merge equalities
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
 
-    var diffs5 = DiffList{};
-    defer deinitDiffList(allocator, &diffs5);
-    try diffs5.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "b"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "c"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "d"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "e"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "f"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs5);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .delete, .text = "ac" },
-        .{ .operation = .insert, .text = "bd" },
-        .{ .operation = .equal, .text = "ef" },
-    }), diffs5.items); // Merge interweave
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
 
-    var diffs6 = DiffList{};
-    defer deinitDiffList(allocator, &diffs6);
-    try diffs6.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "abc"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "dc"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs6);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .equal, .text = "a" },
-        .{ .operation = .delete, .text = "d" },
-        .{ .operation = .insert, .text = "b" },
-        .{ .operation = .equal, .text = "c" },
-    }), diffs6.items); // Prefix and suffix detection
+        try diffCleanupMerge(allocator, &diffs);
 
-    var diffs7 = DiffList{};
-    defer deinitDiffList(allocator, &diffs7);
-    try diffs7.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "x"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "abc"),
-        },
-        .{
-            .operation = .delete,
-            .text = try allocator.dupe(u8, "dc"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "y"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs7);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .equal, .text = "xa" },
-        .{ .operation = .delete, .text = "d" },
-        .{ .operation = .insert, .text = "b" },
-        .{ .operation = .equal, .text = "cy" },
-    }), diffs7.items); // Prefix and suffix detection with equalities
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "abc" },
+        }, diffs.items);
+    }
 
-    var diffs8 = DiffList{};
-    defer deinitDiffList(allocator, &diffs8);
-    try diffs8.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "a"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "ba"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "c"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs8);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .insert, .text = "ab" },
-        .{ .operation = .equal, .text = "ac" },
-    }), diffs8.items); // Slide edit left
+    {
+        // Merge deletions
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
 
-    var diffs9 = DiffList{};
-    defer deinitDiffList(allocator, &diffs9);
-    try diffs9.appendSlice(allocator, &[_]Diff{
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "c"),
-        },
-        .{
-            .operation = .insert,
-            .text = try allocator.dupe(u8, "ab"),
-        },
-        .{
-            .operation = .equal,
-            .text = try allocator.dupe(u8, "a"),
-        },
-    });
-    try diffCleanupMerge(allocator, &diffs9);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        .{ .operation = .equal, .text = "ca" },
-        .{ .operation = .insert, .text = "ba" },
-    }), diffs9.items); // Slide edit right
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "c") });
 
-    var diffs10 = DiffList{};
-    defer deinitDiffList(allocator, &diffs10);
-    try diffs10.appendSlice(allocator, &[_]Diff{
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "a"),
-        ),
-        Diff.init(
-            .delete,
-            try allocator.dupe(u8, "b"),
-        ),
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "c"),
-        ),
-        Diff.init(
-            .delete,
-            try allocator.dupe(u8, "ac"),
-        ),
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "x"),
-        ),
-    });
-    try diffCleanupMerge(allocator, &diffs10);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        Diff.init(.delete, "abc"),
-        Diff.init(.equal, "acx"),
-    }), diffs10.items); // Slide edit left recursive
+        try diffCleanupMerge(allocator, &diffs);
 
-    var diffs11 = DiffList{};
-    defer deinitDiffList(allocator, &diffs11);
-    try diffs11.appendSlice(allocator, &[_]Diff{
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "x"),
-        ),
-        Diff.init(
-            .delete,
-            try allocator.dupe(u8, "ca"),
-        ),
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "c"),
-        ),
-        Diff.init(
-            .delete,
-            try allocator.dupe(u8, "b"),
-        ),
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "a"),
-        ),
-    });
-    try diffCleanupMerge(allocator, &diffs11);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        Diff.init(.equal, "xca"),
-        Diff.init(.delete, "cba"),
-    }), diffs11.items); // Slide edit right recursive
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abc" },
+        }, diffs.items);
+    }
 
-    var diffs12 = DiffList{};
-    defer deinitDiffList(allocator, &diffs12);
-    try diffs12.appendSlice(allocator, &[_]Diff{
-        Diff.init(
-            .delete,
-            try allocator.dupe(u8, "b"),
-        ),
-        Diff.init(
-            .insert,
-            try allocator.dupe(u8, "ab"),
-        ),
-        Diff.init(
-            .equal,
-            try allocator.dupe(u8, "c"),
-        ),
-    });
-    try diffCleanupMerge(allocator, &diffs12);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        Diff.init(.insert, "a"),
-        Diff.init(.equal, "bc"),
-    }), diffs12.items); // Empty merge
+    {
 
-    var diffs13 = DiffList{};
-    defer deinitDiffList(allocator, &diffs13);
-    try diffs13.appendSlice(allocator, &[_]Diff{
-        Diff.init(.equal, ""),
-        Diff.init(.insert, try allocator.dupe(u8, "a")),
-        Diff.init(.equal, try allocator.dupe(u8, "b")),
-    });
-    try diffCleanupMerge(allocator, &diffs13);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{
-        Diff.init(.insert, "a"),
-        Diff.init(.equal, "b"),
-    }), diffs13.items); // Empty equality
+        // Merge insertions
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "c") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .insert, .text = "abc" },
+        }, diffs.items);
+    }
+
+    {
+        // Merge interweave
+        var diffs = try DiffList.initCapacity(allocator, 6);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "c") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "d") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "e") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "f") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "ac" },
+            .{ .operation = .insert, .text = "bd" },
+            .{ .operation = .equal, .text = "ef" },
+        }, diffs.items);
+    }
+
+    {
+        // Prefix and suffix detection
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "abc") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "dc") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "d" },
+            .{ .operation = .insert, .text = "b" },
+            .{ .operation = .equal, .text = "c" },
+        }, diffs.items);
+    }
+
+    {
+        // Prefix and suffix detection with equalities
+        var diffs = try DiffList.initCapacity(allocator, 5);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "x") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "abc") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "dc") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "y") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "xa" },
+            .{ .operation = .delete, .text = "d" },
+            .{ .operation = .insert, .text = "b" },
+            .{ .operation = .equal, .text = "cy" },
+        }, diffs.items);
+    }
+
+    {
+        // Slide edit left
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ba") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .insert, .text = "ab" },
+            .{ .operation = .equal, .text = "ac" },
+        }, diffs.items);
+    }
+
+    {
+
+        // Slide edit right
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ab") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "ca" },
+            .{ .operation = .insert, .text = "ba" },
+        }, diffs.items);
+    }
+
+    {
+
+        // Slide edit left recursive
+        var diffs = try DiffList.initCapacity(allocator, 5);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ac") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "x") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&.{
+            Diff.init(.delete, "abc"),
+            Diff.init(.equal, "acx"),
+        }, diffs.items);
+    }
+
+    {
+        // Slide edit right recursive
+        var diffs = try DiffList.initCapacity(allocator, 5);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "x") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ca") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&.{
+            Diff.init(.equal, "xca"),
+            Diff.init(.delete, "cba"),
+        }, diffs.items);
+    }
+
+    {
+        // Empty merge
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ab") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&.{
+            Diff.init(.insert, "a"),
+            Diff.init(.equal, "bc"),
+        }, diffs.items);
+    }
+
+    {
+        // Empty equality
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = "" });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "b") });
+
+        try diffCleanupMerge(allocator, &diffs);
+
+        try testing.expectEqualDeep(&.{
+            Diff.init(.insert, "a"),
+            Diff.init(.equal, "b"),
+        }, diffs.items);
+    }
 }
 
 test diffCleanupSemanticLossless {
-    const allocator = std.testing.allocator;
-    var diffs = DiffList{};
-    try diffCleanupSemanticLossless(allocator, &diffs);
-    try testing.expectEqualDeep(@as([]const Diff, &[0]Diff{}), diffs.items); // Null case
+    const allocator = testing.allocator;
 
-    var diffs2 = DiffList{};
-    defer deinitDiffList(allocator, &diffs2);
-    try diffs2.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "AAA\r\n\r\nBBB")),
-        Diff.init(.insert, try allocator.dupe(u8, "\r\nDDD\r\n\r\nBBB")),
-        Diff.init(.equal, try allocator.dupe(u8, "\r\nEEE")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs2);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "AAA\r\n\r\n"),
-        Diff.init(.insert, "BBB\r\nDDD\r\n\r\n"),
-        Diff.init(.equal, "BBB\r\nEEE"),
-    }), diffs2.items);
+    {
+        // Null case
+        var diffs: DiffList = .{};
+        try diffCleanupSemanticLossless(allocator, &diffs);
+        try testing.expectEqualDeep(&[_]Diff{}, diffs.items);
+    }
 
-    var diffs3 = DiffList{};
-    defer deinitDiffList(allocator, &diffs3);
-    try diffs3.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "AAA\r\nBBB")),
-        Diff.init(.insert, try allocator.dupe(u8, " DDD\r\nBBB")),
-        Diff.init(.equal, try allocator.dupe(u8, " EEE")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs3);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "AAA\r\n"),
-        Diff.init(.insert, "BBB DDD\r\n"),
-        Diff.init(.equal, "BBB EEE"),
-    }), diffs3.items);
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
 
-    var diffs4 = DiffList{};
-    defer deinitDiffList(allocator, &diffs4);
-    try diffs4.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "The c")),
-        Diff.init(.insert, try allocator.dupe(u8, "ow and the c")),
-        Diff.init(.equal, try allocator.dupe(u8, "at.")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs4);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "The "),
-        Diff.init(.insert, "cow and the "),
-        Diff.init(.equal, "cat."),
-    }), diffs4.items);
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "AAA\r\n\r\nBBB") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "\r\nDDD\r\n\r\nBBB") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "\r\nEEE") });
 
-    var diffs5 = DiffList{};
-    defer deinitDiffList(allocator, &diffs5);
-    try diffs5.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "The-c")),
-        Diff.init(.insert, try allocator.dupe(u8, "ow-and-the-c")),
-        Diff.init(.equal, try allocator.dupe(u8, "at.")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs5);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "The-"),
-        Diff.init(.insert, "cow-and-the-"),
-        Diff.init(.equal, "cat."),
-    }), diffs5.items);
+        try diffCleanupSemanticLossless(allocator, &diffs);
 
-    var diffs6 = DiffList{};
-    defer deinitDiffList(allocator, &diffs6);
-    try diffs6.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "a")),
-        Diff.init(.delete, try allocator.dupe(u8, "a")),
-        Diff.init(.equal, try allocator.dupe(u8, "ax")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs6);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.delete, "a"),
-        Diff.init(.equal, "aax"),
-    }), diffs6.items);
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.equal, "AAA\r\n\r\n"),
+            Diff.init(.insert, "BBB\r\nDDD\r\n\r\n"),
+            Diff.init(.equal, "BBB\r\nEEE"),
+        }, diffs.items);
+    }
 
-    var diffs7 = DiffList{};
-    defer deinitDiffList(allocator, &diffs7);
-    try diffs7.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "xa")),
-        Diff.init(.delete, try allocator.dupe(u8, "a")),
-        Diff.init(.equal, try allocator.dupe(u8, "a")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs7);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "xaa"),
-        Diff.init(.delete, "a"),
-    }), diffs7.items);
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
 
-    var diffs8 = DiffList{};
-    defer deinitDiffList(allocator, &diffs8);
-    try diffs8.appendSlice(allocator, &.{
-        Diff.init(.equal, try allocator.dupe(u8, "The xxx. The ")),
-        Diff.init(.insert, try allocator.dupe(u8, "zzz. The ")),
-        Diff.init(.equal, try allocator.dupe(u8, "yyy.")),
-    });
-    try diffCleanupSemanticLossless(allocator, &diffs8);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "The xxx."),
-        Diff.init(.insert, " The zzz."),
-        Diff.init(.equal, " The yyy."),
-    }), diffs8.items);
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "AAA\r\nBBB") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, " DDD\r\nBBB") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, " EEE") });
+
+        try diffCleanupSemanticLossless(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.equal, "AAA\r\n"),
+            Diff.init(.insert, "BBB DDD\r\n"),
+            Diff.init(.equal, "BBB EEE"),
+        }, diffs.items);
+    }
+
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The c") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ow and the c") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "at.") });
+
+        try diffCleanupSemanticLossless(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.equal, "The "),
+            Diff.init(.insert, "cow and the "),
+            Diff.init(.equal, "cat."),
+        }, diffs.items);
+    }
+
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The-c") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ow-and-the-c") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "at.") });
+
+        try diffCleanupSemanticLossless(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.equal, "The-"),
+            Diff.init(.insert, "cow-and-the-"),
+            Diff.init(.equal, "cat."),
+        }, diffs.items);
+    }
+
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "ax") });
+
+        try diffCleanupSemanticLossless(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.delete, "a"),
+            Diff.init(.equal, "aax"),
+        }, diffs.items);
+    }
+
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "xa") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
+
+        try diffCleanupSemanticLossless(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.equal, "xaa"),
+            Diff.init(.delete, "a"),
+        }, diffs.items);
+    }
+
+    {
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The xxx. The ") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "zzz. The ") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "yyy.") });
+
+        try diffCleanupSemanticLossless(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            Diff.init(.equal, "The xxx."),
+            Diff.init(.insert, " The zzz."),
+            Diff.init(.equal, " The yyy."),
+        }, diffs.items);
+    }
 }
 
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
@@ -2114,331 +2062,509 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
 }
 
 test diffBisect {
-    const allocator = std.testing.allocator;
-    // Normal.
+    const allocator = testing.allocator;
+
+    const this: DiffMatchPatch = .{ .diff_timeout = 0 };
+
     const a = "cat";
     const b = "map";
-    // Since the resulting diff hasn't been normalized, it would be ok if
-    // the insertion and deletion pairs are swapped.
-    // If the order changes, tweak this test as required.
-    var diffs = DiffList{};
-    defer deinitDiffList(allocator, &diffs);
-    var this = default;
-    try diffs.appendSlice(allocator, &.{
-        Diff.init(.delete, try allocator.dupe(u8, "c")),
-        Diff.init(.insert, try allocator.dupe(u8, "m")),
-        Diff.init(.equal, try allocator.dupe(u8, "a")),
-        Diff.init(.delete, try allocator.dupe(u8, "t")),
-        Diff.init(.insert, try allocator.dupe(u8, "p")),
-    });
-    // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
-    var diff_bisect = try this.diffBisect(
-        allocator,
-        a,
-        b,
-        std.math.maxInt(u64),
-    );
-    defer deinitDiffList(allocator, &diff_bisect);
-    try testing.expectEqualDeep(diffs, diff_bisect); // Normal.
 
-    // Timeout.
-    var diffs2 = DiffList{};
-    defer deinitDiffList(allocator, &diffs2);
-    try diffs2.appendSlice(allocator, &.{
-        Diff.init(.delete, try allocator.dupe(u8, "cat")),
-        Diff.init(.insert, try allocator.dupe(u8, "map")),
-    });
-    // Travis TODO not sure if 0 is correct for  DateTime.MinValue
-    var diff_bisect2 = try this.diffBisect(allocator, a, b, 0);
-    defer deinitDiffList(allocator, &diff_bisect2);
-    try testing.expectEqualDeep(diffs2, diff_bisect2); // Timeout.
+    {
+        // Normal.
+
+        // Since the resulting diff hasn't been normalized, it would be ok if
+        // the insertion and deletion pairs are swapped.
+        // If the order changes, tweak this test as required.
+        // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
+        var diffs = try this.diffBisect(
+            allocator,
+            a,
+            b,
+            std.math.maxInt(u64),
+        );
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "c" },
+            .{ .operation = .insert, .text = "m" },
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "t" },
+            .{ .operation = .insert, .text = "p" },
+        }, diffs.items);
+    }
+
+    {
+        // Timeout.
+        var diffs2 = DiffList{};
+        defer deinitDiffList(allocator, &diffs2);
+        try diffs2.appendSlice(allocator, &.{
+            Diff.init(.delete, try allocator.dupe(u8, "cat")),
+            Diff.init(.insert, try allocator.dupe(u8, "map")),
+        });
+        // Travis TODO not sure if 0 is correct for  DateTime.MinValue
+        var diffs = try this.diffBisect(allocator, a, b, 0);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "cat" },
+            .{ .operation = .insert, .text = "map" },
+        }, diffs.items);
+    }
 }
 
-const talloc = testing.allocator;
-
 test diff {
-    var arena = std.heap.ArenaAllocator.init(talloc);
-    defer arena.deinit();
-    const allocator = std.testing.allocator;
+    const allocator = testing.allocator;
 
-    // Perform a trivial diff.
-    var diffs = DiffList{};
-    defer diffs.deinit(arena.allocator());
-    var this = DiffMatchPatch{};
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "", "", false)).items); // diff: Null case.
+    const this: DiffMatchPatch = .{ .diff_timeout = 0 };
 
-    // TODO This is the last set of tests using the arena.  Someone should
-    // rewrite them not to do so. -Sam
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{Diff.init(.equal, "abc")});
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "abc", false)).items); // diff: Equality.
+    {
+        // diff: Null case.
+        var diffs = try this.diff(allocator, "", "", false);
+        defer deinitDiffList(allocator, &diffs);
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "ab"), Diff.init(.insert, "123"), Diff.init(.equal, "c") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "ab123c", false)).items); // diff: Simple insertion.
+        try testing.expectEqual(0, diffs.items.len);
+    }
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "a"), Diff.init(.delete, "123"), Diff.init(.equal, "bc") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a123bc", "abc", false)).items); // diff: Simple deletion.
+    {
+        // diff: Equality.
+        var diffs = try this.diff(allocator, "abc", "abc", false);
+        defer deinitDiffList(allocator, &diffs);
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "a"), Diff.init(.insert, "123"), Diff.init(.equal, "b"), Diff.init(.insert, "456"), Diff.init(.equal, "c") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abc", "a123b456c", false)).items); // diff: Two insertions.
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "abc" },
+        }, diffs.items);
+    }
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.equal, "a"), Diff.init(.delete, "123"), Diff.init(.equal, "b"), Diff.init(.delete, "456"), Diff.init(.equal, "c") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a123b456c", "abc", false)).items); // diff: Two deletions.
+    {
+        // diff: Simple insertion.
+        var diffs = try this.diff(allocator, "abc", "ab123c", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "ab" },
+            .{ .operation = .insert, .text = "123" },
+            .{ .operation = .equal, .text = "c" },
+        }, diffs.items);
+    }
+
+    {
+        // diff: Simple deletion.
+        var diffs = try this.diff(allocator, "a123bc", "abc", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "123" },
+            .{ .operation = .equal, .text = "bc" },
+        }, diffs.items);
+    }
+
+    {
+        // diff: Two insertions.
+        var diffs = try this.diff(allocator, "abc", "a123b456c", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .insert, .text = "123" },
+            .{ .operation = .equal, .text = "b" },
+            .{ .operation = .insert, .text = "456" },
+            .{ .operation = .equal, .text = "c" },
+        }, diffs.items);
+    }
+
+    {
+        // diff: Two deletions.
+        var diffs = try this.diff(allocator, "a123b456c", "abc", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "123" },
+            .{ .operation = .equal, .text = "b" },
+            .{ .operation = .delete, .text = "456" },
+            .{ .operation = .equal, .text = "c" },
+        }, diffs.items);
+    }
 
     // Perform a real diff.
-    // Switch off the timeout.
-    this.diff_timeout = 0;
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "a"), Diff.init(.insert, "b") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a", "b", false)).items); // diff: Simple case #1.
+    {
+        // diff: Simple case #1.
+        var diffs = try this.diff(allocator, "a", "b", false);
+        defer deinitDiffList(allocator, &diffs);
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "Apple"), Diff.init(.insert, "Banana"), Diff.init(.equal, "s are a"), Diff.init(.insert, "lso"), Diff.init(.equal, " fruit.") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "Apples are a fruit.", "Bananas are also fruit.", false)).items); // diff: Simple case #2.
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .insert, .text = "b" },
+        }, diffs.items);
+    }
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "a"), Diff.init(.insert, "\u{0680}"), Diff.init(.equal, "x"), Diff.init(.delete, "\t"), Diff.init(.insert, "\x00") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "ax\t", "\u{0680}x\x00", false)).items); // diff: Simple case #3.
+    {
+        // diff: Simple case #2.
+        var diffs = try this.diff(allocator, "Apples are a fruit.", "Bananas are also fruit.", false);
+        defer deinitDiffList(allocator, &diffs);
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "1"), Diff.init(.equal, "a"), Diff.init(.delete, "y"), Diff.init(.equal, "b"), Diff.init(.delete, "2"), Diff.init(.insert, "xab") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "1ayb2", "abxab", false)).items); // diff: Overlap #1.
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "Apple" },
+            .{ .operation = .insert, .text = "Banana" },
+            .{ .operation = .equal, .text = "s are a" },
+            .{ .operation = .insert, .text = "lso" },
+            .{ .operation = .equal, .text = " fruit." },
+        }, diffs.items);
+    }
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.insert, "xaxcx"), Diff.init(.equal, "abc"), Diff.init(.delete, "y") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "abcy", "xaxcxabc", false)).items); // diff: Overlap #2.
+    {
+        // diff: Simple case #3.
+        var diffs = try this.diff(allocator, "ax\t", "\u{0680}x\x00", false);
+        defer deinitDiffList(allocator, &diffs);
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.delete, "ABCD"), Diff.init(.equal, "a"), Diff.init(.delete, "="), Diff.init(.insert, "-"), Diff.init(.equal, "bcd"), Diff.init(.delete, "="), Diff.init(.insert, "-"), Diff.init(.equal, "efghijklmnopqrs"), Diff.init(.delete, "EFGHIJKLMNOefg") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false)).items); // diff: Overlap #3.
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .insert, .text = "\u{0680}" },
+            .{ .operation = .equal, .text = "x" },
+            .{ .operation = .delete, .text = "\t" },
+            .{ .operation = .insert, .text = "\x00" },
+        }, diffs.items);
+    }
 
-    diffs.items.len = 0;
-    try diffs.appendSlice(arena.allocator(), &.{ Diff.init(.insert, " "), Diff.init(.equal, "a"), Diff.init(.insert, "nd"), Diff.init(.equal, " [[Pennsylvania]]"), Diff.init(.delete, " and [[New") });
-    try testing.expectEqualDeep(diffs.items, (try this.diff(arena.allocator(), "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false)).items); // diff: Large equality.
+    {
+        // diff: Overlap #1.
+        var diffs = try this.diff(allocator, "1ayb2", "abxab", false);
+        defer deinitDiffList(allocator, &diffs);
 
-    // end of Arena Zone
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "1" },
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "y" },
+            .{ .operation = .equal, .text = "b" },
+            .{ .operation = .delete, .text = "2" },
+            .{ .operation = .insert, .text = "xab" },
+        }, diffs.items);
+    }
 
-    this.diff_timeout = 100; // 100ms
+    {
+        // diff: Overlap #2.
+        var diffs = try this.diff(allocator, "abcy", "xaxcxabc", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .insert, .text = "xaxcx" },
+            .{ .operation = .equal, .text = "abc" },
+            .{ .operation = .delete, .text = "y" },
+        }, diffs.items);
+    }
+
+    {
+        // diff: Overlap #3.
+        var diffs = try this.diff(allocator, "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "ABCD" },
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "=" },
+            .{ .operation = .insert, .text = "-" },
+            .{ .operation = .equal, .text = "bcd" },
+            .{ .operation = .delete, .text = "=" },
+            .{ .operation = .insert, .text = "-" },
+            .{ .operation = .equal, .text = "efghijklmnopqrs" },
+            .{ .operation = .delete, .text = "EFGHIJKLMNOefg" },
+        }, diffs.items);
+    }
+
+    {
+        // diff: Large equality.
+        var diffs = try this.diff(allocator, "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false);
+        defer deinitDiffList(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .insert, .text = " " },
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .insert, .text = "nd" },
+            .{ .operation = .equal, .text = " [[Pennsylvania]]" },
+            .{ .operation = .delete, .text = " and [[New" },
+        }, diffs.items);
+    }
+
     // Increase the text lengths by 1024 times to ensure a timeout.
     {
         const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
         const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
+
+        const with_timout: DiffMatchPatch = .{
+            .diff_timeout = 100, // 100ms
+        };
+
         const start_time = std.time.milliTimestamp();
-        var time_diff = try this.diff(allocator, a, b, false);
-        defer deinitDiffList(allocator, &time_diff);
+        {
+            var time_diff = try with_timout.diff(allocator, a, b, false);
+            defer deinitDiffList(allocator, &time_diff);
+        }
         const end_time = std.time.milliTimestamp();
+
         // Test that we took at least the timeout period.
-        try testing.expect(this.diff_timeout <= end_time - start_time); // diff: Timeout min.
+        try testing.expect(with_timout.diff_timeout <= end_time - start_time); // diff: Timeout min.
         // Test that we didn't take forever (be forgiving).
         // Theoretically this test could fail very occasionally if the
         // OS task swaps or locks up for a second at the wrong moment.
-        try testing.expect((this.diff_timeout) * 10000 * 2 > end_time - start_time); // diff: Timeout max.
-        this.diff_timeout = 0;
+        try testing.expect((with_timout.diff_timeout) * 10000 * 2 > end_time - start_time); // diff: Timeout max.
     }
+
     {
         // Test the linemode speedup.
         // Must be long to pass the 100 char cutoff.
         const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
         const b = "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n";
+
         var diff_checked = try this.diff(allocator, a, b, true);
         defer deinitDiffList(allocator, &diff_checked);
+
         var diff_unchecked = try this.diff(allocator, a, b, false);
         defer deinitDiffList(allocator, &diff_unchecked);
-        try testing.expectEqualDeep(diff_checked, diff_unchecked); // diff: Simple line-mode.
+
+        try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
     }
+
     {
         const a = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
         const b = "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
+
         var diff_checked = try this.diff(allocator, a, b, true);
         defer deinitDiffList(allocator, &diff_checked);
+
         var diff_unchecked = try this.diff(allocator, a, b, false);
         defer deinitDiffList(allocator, &diff_unchecked);
-        try testing.expectEqualDeep(diff_checked, diff_unchecked); // diff: Single line-mode.
+
+        try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Single line-mode.
     }
 
-    const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
-    const b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n";
-    var diffs_linemode = try this.diff(allocator, a, b, true);
-    defer deinitDiffList(allocator, &diffs_linemode);
-    const texts_linemode = try rebuildtexts(allocator, diffs_linemode);
-    defer {
-        allocator.free(texts_linemode[0]);
-        allocator.free(texts_linemode[1]);
+    {
+        // diff: Overlap line-mode.
+        const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
+        const b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n";
+
+        var diffs_linemode = try this.diff(allocator, a, b, true);
+        defer deinitDiffList(allocator, &diffs_linemode);
+
+        const texts_linemode = try rebuildtexts(allocator, diffs_linemode);
+        defer {
+            allocator.free(texts_linemode[0]);
+            allocator.free(texts_linemode[1]);
+        }
+
+        var diffs_textmode = try this.diff(allocator, a, b, false);
+        defer deinitDiffList(allocator, &diffs_textmode);
+
+        const texts_textmode = try rebuildtexts(allocator, diffs_textmode);
+        defer {
+            allocator.free(texts_textmode[0]);
+            allocator.free(texts_textmode[1]);
+        }
+
+        try testing.expectEqualStrings(texts_textmode[0], texts_linemode[0]);
+        try testing.expectEqualStrings(texts_textmode[1], texts_linemode[1]);
     }
-    var diffs_textmode = try this.diff(allocator, a, b, false);
-    defer deinitDiffList(allocator, &diffs_textmode);
-    const texts_textmode = try rebuildtexts(allocator, diffs_textmode);
-    defer {
-        allocator.free(texts_textmode[0]);
-        allocator.free(texts_textmode[1]);
-    }
-    try testing.expectEqualDeep(texts_textmode, texts_linemode); // diff: Overlap line-mode.
 }
 
 test diffCleanupSemantic {
-    const alloc = std.testing.allocator;
-    // Cleanup semantically trivial equalities.
-    // Null case.
-    var diffs_empty = DiffList{};
-    defer deinitDiffList(alloc, &diffs_empty);
-    // var this = default;
-    try diffCleanupSemantic(alloc, &diffs_empty);
-    try testing.expectEqual(@as(usize, 0), diffs_empty.items.len); // Null case
+    const allocator = testing.allocator;
 
-    var diffs = DiffList{};
-    defer deinitDiffList(alloc, &diffs);
-    diffs.items.len = 0;
-    try diffs.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "ab")),
-        Diff.init(.insert, try alloc.dupe(u8, "cd")),
-        Diff.init(.equal, try alloc.dupe(u8, "12")),
-        Diff.init(.delete, try alloc.dupe(u8, "e")),
-    });
-    try diffCleanupSemantic(alloc, &diffs);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #1
-        Diff.init(.delete, "ab"),
-        Diff.init(.insert, "cd"),
-        Diff.init(.equal, "12"),
-        Diff.init(.delete, "e"),
-    }), diffs.items);
+    {
+        // Null case.
+        var diffs: DiffList = .{};
+        defer deinitDiffList(allocator, &diffs);
+        try diffCleanupSemantic(allocator, &diffs);
+        try testing.expectEqual(@as(usize, 0), diffs.items.len); // Null case
+    }
 
-    var diffs2 = DiffList{};
-    defer deinitDiffList(alloc, &diffs2);
-    diffs2.items.len = 0;
-    try diffs2.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "abc")),
-        Diff.init(.insert, try alloc.dupe(u8, "ABC")),
-        Diff.init(.equal, try alloc.dupe(u8, "1234")),
-        Diff.init(.delete, try alloc.dupe(u8, "wxyz")),
-    });
-    try diffCleanupSemantic(alloc, &diffs2);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No elimination #2
-        Diff.init(.delete, "abc"),
-        Diff.init(.insert, "ABC"),
-        Diff.init(.equal, "1234"),
-        Diff.init(.delete, "wxyz"),
-    }), diffs2.items);
+    {
+        // No elimination #1
+        var diffs = try DiffList.initCapacity(allocator, 4);
+        defer deinitDiffList(allocator, &diffs);
 
-    var diffs3 = DiffList{};
-    defer deinitDiffList(alloc, &diffs3);
-    try diffs3.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "a")),
-        Diff.init(.equal, try alloc.dupe(u8, "b")),
-        Diff.init(.delete, try alloc.dupe(u8, "c")),
-    });
-    try diffCleanupSemantic(alloc, &diffs3);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Simple elimination
-        Diff.init(.delete, "abc"),
-        Diff.init(.insert, "b"),
-    }), diffs3.items);
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ab") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "cd") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "12") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "e") });
 
-    var diffs4 = DiffList{};
-    defer deinitDiffList(alloc, &diffs4);
-    try diffs4.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "ab")),
-        Diff.init(.equal, try alloc.dupe(u8, "cd")),
-        Diff.init(.delete, try alloc.dupe(u8, "e")),
-        Diff.init(.equal, try alloc.dupe(u8, "f")),
-        Diff.init(.insert, try alloc.dupe(u8, "g")),
-    });
-    try diffCleanupSemantic(alloc, &diffs4);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Backpass elimination
-        Diff.init(.delete, "abcdef"),
-        Diff.init(.insert, "cdfg"),
-    }), diffs4.items);
+        try diffCleanupSemantic(allocator, &diffs);
 
-    var diffs5 = DiffList{};
-    defer deinitDiffList(alloc, &diffs5);
-    try diffs5.appendSlice(alloc, &.{
-        Diff.init(.insert, try alloc.dupe(u8, "1")),
-        Diff.init(.equal, try alloc.dupe(u8, "A")),
-        Diff.init(.delete, try alloc.dupe(u8, "B")),
-        Diff.init(.insert, try alloc.dupe(u8, "2")),
-        Diff.init(.equal, try alloc.dupe(u8, "_")),
-        Diff.init(.insert, try alloc.dupe(u8, "1")),
-        Diff.init(.equal, try alloc.dupe(u8, "A")),
-        Diff.init(.delete, try alloc.dupe(u8, "B")),
-        Diff.init(.insert, try alloc.dupe(u8, "2")),
-    });
-    try diffCleanupSemantic(alloc, &diffs5);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Multiple elimination
-        Diff.init(.delete, "AB_AB"),
-        Diff.init(.insert, "1A2_1A2"),
-    }), diffs5.items);
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "cd" },
+            .{ .operation = .equal, .text = "12" },
+            .{ .operation = .delete, .text = "e" },
+        }, diffs.items);
+    }
 
-    var diffs6 = DiffList{};
-    defer deinitDiffList(alloc, &diffs6);
-    try diffs6.appendSlice(alloc, &.{
-        Diff.init(.equal, try alloc.dupe(u8, "The c")),
-        Diff.init(.delete, try alloc.dupe(u8, "ow and the c")),
-        Diff.init(.equal, try alloc.dupe(u8, "at.")),
-    });
-    try diffCleanupSemantic(alloc, &diffs6);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Word boundaries
-        Diff.init(.equal, "The "),
-        Diff.init(.delete, "cow and the "),
-        Diff.init(.equal, "cat."),
-    }), diffs6.items);
+    {
+        // No elimination #2
+        var diffs = try DiffList.initCapacity(allocator, 4);
+        defer deinitDiffList(allocator, &diffs);
 
-    var diffs7 = DiffList{};
-    defer deinitDiffList(alloc, &diffs7);
-    try diffs7.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "abcxx")),
-        Diff.init(.insert, try alloc.dupe(u8, "xxdef")),
-    });
-    try diffCleanupSemantic(alloc, &diffs7);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // No overlap elimination
-        Diff.init(.delete, "abcxx"),
-        Diff.init(.insert, "xxdef"),
-    }), diffs7.items);
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abc") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ABC") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "1234") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "wxyz") });
 
-    var diffs8 = DiffList{};
-    defer deinitDiffList(alloc, &diffs8);
-    try diffs8.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "abcxxx")),
-        Diff.init(.insert, try alloc.dupe(u8, "xxxdef")),
-    });
-    try diffCleanupSemantic(alloc, &diffs8);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Overlap elimination
-        Diff.init(.delete, "abc"),
-        Diff.init(.equal, "xxx"),
-        Diff.init(.insert, "def"),
-    }), diffs8.items);
+        try diffCleanupSemantic(allocator, &diffs);
 
-    var diffs9 = DiffList{};
-    defer deinitDiffList(alloc, &diffs9);
-    try diffs9.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "xxxabc")),
-        Diff.init(.insert, try alloc.dupe(u8, "defxxx")),
-    });
-    try diffCleanupSemantic(alloc, &diffs9);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Reverse overlap elimination
-        Diff.init(.insert, "def"),
-        Diff.init(.equal, "xxx"),
-        Diff.init(.delete, "abc"),
-    }), diffs9.items);
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abc" },
+            .{ .operation = .insert, .text = "ABC" },
+            .{ .operation = .equal, .text = "1234" },
+            .{ .operation = .delete, .text = "wxyz" },
+        }, diffs.items);
+    }
 
-    var diffs10 = DiffList{};
-    defer deinitDiffList(alloc, &diffs10);
-    try diffs10.appendSlice(alloc, &.{
-        Diff.init(.delete, try alloc.dupe(u8, "abcd1212")),
-        Diff.init(.insert, try alloc.dupe(u8, "1212efghi")),
-        Diff.init(.equal, try alloc.dupe(u8, "----")),
-        Diff.init(.delete, try alloc.dupe(u8, "A3")),
-        Diff.init(.insert, try alloc.dupe(u8, "3BC")),
-    });
-    try diffCleanupSemantic(alloc, &diffs10);
-    try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ // Two overlap eliminations
-        Diff.init(.delete, "abcd"),
-        Diff.init(.equal, "1212"),
-        Diff.init(.insert, "efghi"),
-        Diff.init(.equal, "----"),
-        Diff.init(.delete, "A"),
-        Diff.init(.equal, "3"),
-        Diff.init(.insert, "BC"),
-    }), diffs10.items);
+    {
+        // Simple elimination
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "b") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "c") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abc" },
+            .{ .operation = .insert, .text = "b" },
+        }, diffs.items);
+    }
+
+    {
+        // Backpass elimination
+        var diffs = try DiffList.initCapacity(allocator, 5);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ab") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "cd") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "e") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "f") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "g") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abcdef" },
+            .{ .operation = .insert, .text = "cdfg" },
+        }, diffs.items);
+    }
+
+    {
+        // Multiple elimination
+        var diffs = try DiffList.initCapacity(allocator, 9);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "1") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "A") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "B") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "2") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "_") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "1") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "A") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "B") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "2") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "AB_AB" },
+            .{ .operation = .insert, .text = "1A2_1A2" },
+        }, diffs.items);
+    }
+
+    {
+        // Word boundaries
+        var diffs = try DiffList.initCapacity(allocator, 3);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The c") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ow and the c") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "at.") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .equal, .text = "The " },
+            .{ .operation = .delete, .text = "cow and the " },
+            .{ .operation = .equal, .text = "cat." },
+        }, diffs.items);
+    }
+
+    {
+        // No overlap elimination
+        var diffs = try DiffList.initCapacity(allocator, 2);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abcxx") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "xxdef") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abcxx" },
+            .{ .operation = .insert, .text = "xxdef" },
+        }, diffs.items);
+    }
+
+    {
+        // Overlap elimination
+        var diffs = try DiffList.initCapacity(allocator, 2);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abcxxx") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "xxxdef") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abc" },
+            .{ .operation = .equal, .text = "xxx" },
+            .{ .operation = .insert, .text = "def" },
+        }, diffs.items);
+    }
+
+    {
+        // Reverse overlap elimination
+        var diffs = try DiffList.initCapacity(allocator, 2);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "xxxabc") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "defxxx") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .insert, .text = "def" },
+            .{ .operation = .equal, .text = "xxx" },
+            .{ .operation = .delete, .text = "abc" },
+        }, diffs.items);
+    }
+
+    {
+        // Two overlap eliminations
+        var diffs = try DiffList.initCapacity(allocator, 5);
+        defer deinitDiffList(allocator, &diffs);
+
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abcd1212") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "1212efghi") });
+        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "----") });
+        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "A3") });
+        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "3BC") });
+
+        try diffCleanupSemantic(allocator, &diffs);
+
+        try testing.expectEqualDeep(&[_]Diff{
+            .{ .operation = .delete, .text = "abcd" },
+            .{ .operation = .equal, .text = "1212" },
+            .{ .operation = .insert, .text = "efghi" },
+            .{ .operation = .equal, .text = "----" },
+            .{ .operation = .delete, .text = "A" },
+            .{ .operation = .equal, .text = "3" },
+            .{ .operation = .insert, .text = "BC" },
+        }, diffs.items);
+    }
 }
