@@ -1918,7 +1918,13 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
 /// @param pattern The pattern to search for.
 /// @param loc The location to search around.
 /// @return Best match index or -1.
-pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, passed_loc: usize) ?usize {
+pub fn matchMain(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    text: []const u8,
+    pattern: []const u8,
+    passed_loc: usize,
+) ?usize {
     // Clamp the loc to fit within text.
     const loc = @min(passed_loc, text.len);
     if (std.mem.eql(u8, text, pattern)) {
@@ -1933,7 +1939,7 @@ pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, pa
         return loc;
     } else {
         // Do a fuzzy compare.
-        return matchBitap(allocator, text, pattern, loc);
+        return dmp.matchBitap(allocator, text, pattern, loc);
     }
 }
 
@@ -1945,6 +1951,7 @@ pub fn matchMain(allocator: Allocator, text: []const u8, pattern: []const u8, pa
 // a nice balance between code size and versatility.
 // Something like this:
 fn matchBitapImproved(
+    dmp: DiffMatchPatch,
     allocator: Allocator,
     text: []const u8,
     pattern: []const u8,
@@ -1957,17 +1964,17 @@ fn matchBitapImproved(
     var map = try matchAlphabet(allocator, pattern);
     defer map.deinit();
     // Highest score beyond which we give up.
-    var threshold = @This().threshold;
+    var threshold = dmp.threshold;
     // Is there a nearby exact match? (speedup)
     var best_loc = std.mem.indexOfPos(u8, text, pattern);
     if (best_loc) |best| {
-        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
     }
     // What about in the other direction? (speedup)
     const trunc_text = text[0..@min(loc + pattern.len, text.len)];
     best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
     if (best_loc) |best| {
-        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
     }
     // Initialise the bit arrays.
     const shift: ShiftWidth = @intCast(pattern.len - 1);
@@ -1986,7 +1993,7 @@ fn matchBitapImproved(
         bin_min = 0;
         bin_mid = bin_max;
         while (bin_min < bin_mid) {
-            if (matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
+            if (dmp.matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
                 bin_min = bin_mid;
             } else {
                 bin_max = bin_mid;
@@ -2015,7 +2022,7 @@ fn matchBitapImproved(
                 rd[j] = ((rd[j + 1] << 1)) & char_match & (((last_rd[j + 1] & last_rd[j]) << 1)) & last_rd[j + 1];
             }
             if ((rd[j] & matchmask) != 0) {
-                const score = matchBitapScore(d, j - 1, loc, pattern);
+                const score = dmp.matchBitapScore(d, j - 1, loc, pattern);
                 // This match will almost certainly be better than any existing
                 // match.  But check anyway.
                 if (score <= threshold) {
@@ -2032,7 +2039,7 @@ fn matchBitapImproved(
                 }
             }
         }
-        if (matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
+        if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
             // No hope for a (better) match at greater error levels.
             break;
         }
@@ -2061,6 +2068,7 @@ fn ShiftSizeForType(T: type) type {
 /// @param loc The location to search around.
 /// @return Best match index or -1.
 fn matchBitap(
+    dmp: DiffMatchPatch,
     allocator: Allocator,
     text: []const u8,
     pattern: []const u8,
@@ -2074,11 +2082,11 @@ fn matchBitap(
     var map = try matchAlphabet(allocator, pattern);
     defer map.deinit();
     // Highest score beyond which we give up.
-    var threshold = @This().threshold;
+    var threshold = dmp.threshold;
     // Is there a nearby exact match? (speedup)
     var best_loc = std.mem.indexOfPos(u8, text, pattern);
     if (best_loc) |best| {
-        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
     }
     // TODO obviously if we want a speedup here, we do this:
     // if (threshold == 0.0) return best_loc;
@@ -2087,7 +2095,7 @@ fn matchBitap(
     const trunc_text = text[0..@min(loc + pattern.len, text.len)];
     best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
     if (best_loc) |best| {
-        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
     }
     // Initialise the bit arrays.
     const shift: u6 = @intCast(pattern.len - 1);
@@ -2105,7 +2113,7 @@ fn matchBitap(
         bin_min = 0;
         bin_mid = bin_max;
         while (bin_min < bin_mid) {
-            if (matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
+            if (dmp.matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
                 bin_min = bin_mid;
             } else {
                 bin_max = bin_mid;
@@ -2134,7 +2142,7 @@ fn matchBitap(
                 rd[j] = ((rd[j + 1] << 1) | 1) & char_match | (((last_rd[j + 1] | last_rd[j]) << 1) | 1) | last_rd[j + 1];
             }
             if ((rd[j] & matchmask) != 0) {
-                const score = matchBitapScore(d, j - 1, loc, pattern);
+                const score = dmp.matchBitapScore(d, j - 1, loc, pattern);
                 // This match will almost certainly be better than any existing
                 // match.  But check anyway.
                 if (score <= threshold) {
@@ -2151,7 +2159,7 @@ fn matchBitap(
                 }
             }
         }
-        if (matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
+        if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
             // No hope for a (better) match at greater error levels.
             break;
         }
@@ -2168,7 +2176,13 @@ fn matchBitap(
 /// @param loc Expected location of match.
 /// @param pattern Pattern being sought.
 /// @return Overall score for match (0.0 = good, 1.0 = bad).
-fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
+fn matchBitapScore(
+    dmp: DiffMatchPatch,
+    e: usize,
+    x: usize,
+    loc: usize,
+    pattern: []const u8,
+) f64 {
     // shortcut? TODO, proof in comments
     // if (e == 0 and x == loc) return 0.0;
     const e_float: f32 = @floatFromInt(e);
@@ -2177,7 +2191,7 @@ fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
     const accuracy = e_float / len_float;
     // if loc == x, proximity == 0
     const proximity = if (loc >= x) loc - x else x - loc;
-    if (@This().match_distance == 0) {
+    if (dmp.match_distance == 0) {
         // Dodge divide by zero
         if (proximity == 0) // therefore this returns 0
             return accuracy
@@ -2237,23 +2251,28 @@ fn matchAlphabetImproved(allocator: Allocator, pattern: []const u8, UIntSize: ty
 ///
 /// @param patch The patch to grow.
 /// @param text Source text.
-fn patchAddContext(allocator: Allocator, patch: *Patch, text: []const u8) !void {
+fn patchAddContext(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    patch: *Patch,
+    text: []const u8,
+) !void {
     if (text.len == 0) return;
     // TODO the fixup logic here might make patterns too large?
     // It should be ok, because big patches get broken up.  Hmm.
     var padding = 0;
     { // Grow the pattern around the patch until unique, to set padding amount.
         var pattern = text[patch.start2 .. patch.start2 + patch.length1];
-        const max_width: usize = @This().match_max_bits - (2 * @This().patch_margin);
+        const max_width: usize = dmp.match_max_bits - (2 * dmp.patch_margin);
         while (std.mem.indexOf(u8, text, pattern) != std.mem.lastIndexOf(u8, text, pattern) and pattern.len < max_width) {
-            padding += @This().patch_margin;
+            padding += dmp.patch_margin;
             const pat_start = @max(0, patch.start2 - padding);
             const pat_end = pat_start + @min(text.len, patch.start2 + patch.length1 + padding);
             pattern = text[pat_start..pat_end];
         }
     }
     // Add one chunk for good luck.
-    padding += @This().patch_margin;
+    padding += dmp.patch_margin;
     // Add the prefix.
     const prefix = pre: {
         var pre_start = @max(0, patch.start2 - padding);
@@ -2325,6 +2344,7 @@ const DiffHandling = enum {
 
 /// @return List of Patch objects.
 fn makePatchInternal(
+    dmp: DiffMatchPatch,
     allocator: Allocator,
     text: []const u8,
     diffs: DiffList,
@@ -2369,21 +2389,21 @@ fn makePatchInternal(
             },
             .equal => {
                 //
-                if (a_diff.text.len <= 2 * @This().patch_margin and patch.diffs.items.len != 0 and a_diff != diffs.items[diffs.items.len]) {
+                if (a_diff.text.len <= 2 * dmp.patch_margin and patch.diffs.items.len != 0 and a_diff != diffs.items[diffs.items.len]) {
                     // Small equality inside a patch.
                     const d = if (diff_act == .copy) a_diff.clone(allocator) else a_diff;
                     try patch.diffs.append(allocator, d);
                     patch.length1 += a_diff.text.len;
                     patch.length2 += a_diff.text.len;
                 }
-                if (a_diff.text.len >= 2 * @This().patch_margin) {
+                if (a_diff.text.len >= 2 * dmp.patch_margin) {
                     // Time for a new patch.
                     if (patch.diffs.items.len != 0) {
                         // free the Diff if we own it
                         if (diff_act == .own) {
                             allocator.free(a_diff.text);
                         }
-                        try patchAddContext(allocator, patch, prepatch_text);
+                        try dmp.patchAddContext(allocator, patch, prepatch_text);
                         try patches.append(allocator, patch);
                         patch = Patch{};
                         // Unlike Unidiff, our patch lists have a rolling context.
@@ -2413,7 +2433,7 @@ fn makePatchInternal(
 
     // Pick up the leftover patch if not empty.
     if (patch.diffs.items.len != 0) {
-        try patchAddContext(allocator, patch, prepatch_text);
+        try dmp.patchAddContext(allocator, patch, prepatch_text);
         try patches.append(allocator, patch);
     }
 }
@@ -2423,22 +2443,36 @@ fn makePatchInternal(
 ///
 /// @param text1 Old text.
 /// @param diffs Array of Diff objects for text1 to text2.
-pub fn makePatch(allocator: Allocator, text: []const u8, diffs: DiffList) !PatchList {
-    try makePatchInternal(allocator, text, diffs, .copy);
+pub fn makePatch(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    text: []const u8,
+    diffs: DiffList,
+) !PatchList {
+    try dmp.makePatchInternal(allocator, text, diffs, .copy);
 }
 
-pub fn makePatchFromTexts(allocator: Allocator, text1: []const u8, text2: []const u8) !PatchList {
+pub fn makePatchFromTexts(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    text1: []const u8,
+    text2: []const u8,
+) !PatchList {
     const diffs = try diff(@This(), allocator, text1, text2, true);
     if (diffs.items.len > 2) {
         try diffCleanupSemantic(diffs);
         try diffCleanupEfficiency(diffs);
     }
-    return try makePatchInternal(allocator, text1, diffs, .own);
+    return try dmp.makePatchInternal(allocator, text1, diffs, .own);
 }
 
-pub fn makePatchFromDiffs(allocator: Allocator, diffs: DiffList) !PatchList {
+pub fn makePatchFromDiffs(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    diffs: DiffList,
+) !PatchList {
     const text1 = try diffBeforeText(allocator, diffs);
-    return try makePatch(allocator, text1, diffs, .copy);
+    return try dmp.makePatch(allocator, text1, diffs, .copy);
 }
 
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
@@ -2451,7 +2485,12 @@ pub fn makePatchFromDiffs(allocator: Allocator, diffs: DiffList) !PatchList {
 /// @param text Old text.
 /// @return Two element Object array, containing the new text and an array of
 ///      bool values.
-pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const u8) !struct { []const u8, bool } {
+pub fn patchApply(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    og_patches: PatchList,
+    og_text: []const u8,
+) !struct { []const u8, bool } {
     if (og_patches.items.len == 0) {
         // As silly as this is, we dupe the text, because something
         // passing an empty patchset isn't going to check, and will
@@ -2482,7 +2521,7 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
         defer allocator.free(text1);
         var maybe_start: ?usize = null;
         var maybe_end: ?usize = null;
-        const m_max_b = @This().match_max_bits;
+        const m_max_b = dmp.match_max_bits;
         if (text1.len > m_max_b) {
             // patchSplitMax will only provide an oversized pattern
             // in the case of a monster delete.
@@ -2510,7 +2549,7 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
                 }
             }
         } else {
-            maybe_start = matchMain(allocator, og_text, text1, expected_loc);
+            maybe_start = dmp.matchMain(allocator, og_text, text1, expected_loc);
         }
         if (maybe_start) |start| {
             // Found a match.  :)
@@ -2531,8 +2570,7 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
             } else {
                 // Imperfect match.  Run a diff to get a framework of equivalent
                 // indices.
-                const diffs = try diff(
-                    @This(),
+                const diffs = try dmp.diff(
                     allocator,
                     text1,
                     text2,
@@ -2585,9 +2623,13 @@ pub fn patchApply(allocator: Allocator, og_patches: PatchList, og_text: []const 
 // maximum limit of the match algorithm.
 // Intended to be called only from within patchApply.
 // @param patches List of Patch objects.
-fn patchSplitMax(allocator: Allocator, patches: PatchList) !PatchList {
-    const patch_size = @This().match_max_bits;
-    const patch_margin = @This().patch_margin;
+fn patchSplitMax(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    patches: PatchList,
+) !PatchList {
+    const patch_size = dmp.match_max_bits;
+    const patch_margin = dmp.patch_margin;
     const max_patch_len = patch_size - patch_size - patch_margin;
     // Mutating an array while iterating it? Sure, lets!
     var x = 0;
@@ -2739,7 +2781,10 @@ fn patchSplitMax(allocator: Allocator, patches: PatchList) !PatchList {
 /// Intended to be called only from within patchApply.
 /// @param patches Array of Patch objects.
 /// @return The padding string added to each side.
-fn patchAddPadding(allocator: Allocator, patches: PatchList) ![]const u8 {
+fn patchAddPadding(
+    allocator: Allocator,
+    patches: PatchList,
+) ![]const u8 {
     assert(patches.items.len != 0);
     const pad_len = @This().patch_margin;
     var paddingcodes = try std.ArrayList(u8).initCapacity(allocator, pad_len);
