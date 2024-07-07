@@ -122,7 +122,7 @@ fn diffInternal(
     if (std.mem.eql(u8, before, after)) {
         var diffs = DiffList{};
         if (before.len != 0) {
-            try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, before)));
+            try diffsAppend(allocator, &diffs, .equal, before);
         }
         return diffs;
     }
@@ -141,13 +141,14 @@ fn diffInternal(
 
     // Compute the diff on the middle block.
     var diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, deadline);
+    errdefer deinitDiffList(allocator, &diffs);
 
     // Restore the prefix and suffix.
     if (common_prefix.len != 0) {
-        try diffs.insert(allocator, 0, Diff.init(.equal, try allocator.dupe(u8, common_prefix)));
+        try diffsInsert(allocator, &diffs, 0, .equal, common_prefix);
     }
     if (common_suffix.len != 0) {
-        try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, common_suffix)));
+        try diffsAppend(allocator, &diffs, .equal, common_suffix);
     }
 
     try diffCleanupMerge(allocator, &diffs);
@@ -198,16 +199,17 @@ fn diffCompute(
     deadline: u64,
 ) DiffError!DiffList {
     var diffs = DiffList{};
+    errdefer deinitDiffList(allocator, &diffs);
 
     if (before.len == 0) {
         // Just add some text (speedup).
-        try diffs.append(allocator, Diff.init(.insert, try allocator.dupe(u8, after)));
+        try diffsAppend(allocator, &diffs, .insert, after);
         return diffs;
     }
 
     if (after.len == 0) {
         // Just delete some text (speedup).
-        try diffs.append(allocator, Diff.init(.delete, try allocator.dupe(u8, before)));
+        try diffsAppend(allocator, &diffs, .delete, before);
         return diffs;
     }
 
@@ -220,17 +222,17 @@ fn diffCompute(
             .delete
         else
             .insert;
-        try diffs.append(allocator, Diff.init(op, try allocator.dupe(u8, long_text[0..index])));
-        try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, short_text)));
-        try diffs.append(allocator, Diff.init(op, try allocator.dupe(u8, long_text[index + short_text.len ..])));
+        try diffsAppend(allocator, &diffs, op, long_text[0..index]);
+        try diffsAppend(allocator, &diffs, .equal, short_text);
+        try diffsAppend(allocator, &diffs, op, long_text[index + short_text.len ..]);
         return diffs;
     }
 
     if (short_text.len == 1) {
         // Single character string.
         // After the previous speedup, the character can't be an equality.
-        try diffs.append(allocator, Diff.init(.delete, try allocator.dupe(u8, before)));
-        try diffs.append(allocator, Diff.init(.insert, try allocator.dupe(u8, after)));
+        try diffsAppend(allocator, &diffs, .delete, before);
+        try diffsAppend(allocator, &diffs, .insert, after);
         return diffs;
     }
 
@@ -257,7 +259,7 @@ fn diffCompute(
 
         // Merge the results.
         diffs = diffs_a;
-        try diffs.append(allocator, Diff.init(.equal, try allocator.dupe(u8, half_match.common_middle)));
+        try diffsAppend(allocator, &diffs, .equal, half_match.common_middle);
         try diffs.appendSlice(allocator, diffs_b.items);
         return diffs;
     }
@@ -399,11 +401,19 @@ fn diffHalfMatchInternal(
         }
     }
     if (best_common.items.len * 2 >= long_text.len) {
+        const prefix_before = try allocator.dupe(u8, best_long_text_a);
+        errdefer allocator.free(prefix_before);
+        const suffix_before = try allocator.dupe(u8, best_long_text_b);
+        errdefer allocator.free(suffix_before);
+        const prefix_after = try allocator.dupe(u8, best_short_text_a);
+        errdefer allocator.free(prefix_after);
+        const suffix_after = try allocator.dupe(u8, best_short_text_b);
+        errdefer allocator.free(suffix_after);
         return .{
-            .prefix_before = try allocator.dupe(u8, best_long_text_a),
-            .suffix_before = try allocator.dupe(u8, best_long_text_b),
-            .prefix_after = try allocator.dupe(u8, best_short_text_a),
-            .suffix_after = try allocator.dupe(u8, best_short_text_b),
+            .prefix_before = prefix_before,
+            .suffix_before = suffix_before,
+            .prefix_after = prefix_after,
+            .suffix_after = suffix_after,
             .common_middle = try best_common.toOwnedSlice(allocator),
         };
     } else {
@@ -547,8 +557,8 @@ fn diffBisect(
     // Diff took too long and hit the deadline or
     // number of diffs equals number of characters, no commonality at all.
     var diffs = DiffList{};
-    try diffs.append(allocator, Diff.init(.delete, try allocator.dupe(u8, before)));
-    try diffs.append(allocator, Diff.init(.insert, try allocator.dupe(u8, after)));
+    try diffsAppend(allocator, &diffs, .delete, before);
+    try diffsAppend(allocator, &diffs, .insert, after);
     return diffs;
 }
 
@@ -576,7 +586,9 @@ fn diffBisectSplit(
 
     // Compute both diffs serially.
     var diffs = try dmp.diffInternal(allocator, text1a, text2a, false, deadline);
+    errdefer deinitDiffList(allocator, &diffs);
     var diffsb = try dmp.diffInternal(allocator, text1b, text2b, false, deadline);
+    // Free the list, but not the contents:
     defer diffsb.deinit(allocator);
 
     try diffs.appendSlice(allocator, diffsb.items);
@@ -605,7 +617,7 @@ fn diffLineMode(
     const line_array = a.line_array;
 
     var diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
-
+    errdefer diffs.deinit(allocator);
     // Convert the diff back to original text.
     try diffCharsToLines(allocator, diffs.items, line_array.items);
     // Eliminate freak matches (e.g. blank lines)
@@ -828,6 +840,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                                 diffs.items[ii].text = nt;
                             } else {
                                 const text = try allocator.dupe(u8, text_insert.items[0..common_length]);
+                                errdefer allocator.free(text);
                                 try diffs.insert(allocator, 0, Diff.init(.equal, text));
                                 pointer += 1;
                             }
@@ -856,23 +869,18 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     }
 
                     if (text_delete.items.len != 0) {
-                        try diffs.insert(allocator, pointer, Diff.init(
-                            .delete,
-                            try allocator.dupe(u8, text_delete.items),
-                        ));
+                        try diffsInsert(allocator, diffs, pointer, .delete, text_delete.items);
                         pointer += 1;
                     }
                     if (text_insert.items.len != 0) {
-                        try diffs.insert(allocator, pointer, Diff.init(
-                            .insert,
-                            try allocator.dupe(u8, text_insert.items),
-                        ));
+                        try diffsInsert(allocator, diffs, pointer, .insert, text_insert.items);
                         pointer += 1;
                     }
                     pointer += 1;
                 } else if (pointer != 0 and diffs.items[pointer - 1].operation == .equal) {
                     // Merge this equality with the previous one.
                     // TODO: Fix using realloc or smth
+                    // Note: can't use realloc because the text is const
                     var nt = try allocator.alloc(u8, diffs.items[pointer - 1].text.len + diffs.items[pointer].text.len);
                     const ot = diffs.items[pointer - 1].text;
                     defer (allocator.free(ot));
@@ -991,10 +999,12 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 (last_equality.?.len <= @max(length_insertions2, length_deletions2)))
             {
                 // Duplicate record.
-                try diffs.insert(
+                try diffsInsert(
                     allocator,
+                    diffs,
                     @intCast(equalities.items[equalities.items.len - 1]),
-                    Diff.init(.delete, try allocator.dupe(u8, last_equality.?)),
+                    .delete,
+                    last_equality.?,
                 );
                 // Change second copy to insert.
                 diffs.items[@intCast(equalities.items[equalities.items.len - 1] + 1)].operation = .insert;
@@ -1044,10 +1054,12 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Insert an equality and trim the surrounding edits.
                     defer allocator.free(deletion);
                     defer allocator.free(insertion);
-                    try diffs.insert(
+                    try diffsInsert(
                         allocator,
+                        diffs,
                         @intCast(pointer),
-                        Diff.init(.equal, try allocator.dupe(u8, insertion[0..overlap_length1])),
+                        .equal,
+                        insertion[0..overlap_length1],
                     );
                     diffs.items[@intCast(pointer - 1)].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
@@ -1063,10 +1075,12 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Insert an equality and swap and trim the surrounding edits.
                     defer allocator.free(deletion);
                     defer allocator.free(insertion);
-                    try diffs.insert(
+                    try diffsInsert(
                         allocator,
+                        diffs,
                         @intCast(pointer),
-                        Diff.init(.equal, try allocator.dupe(u8, deletion[0..overlap_length2])),
+                        .equal,
+                        deletion[0..overlap_length2],
                     );
                     diffs.items[@intCast(pointer - 1)].operation = .insert;
                     const new_minus = try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
@@ -1307,10 +1321,12 @@ pub fn diffCleanupEfficiency(
                 ((if (pre_ins) 1 else 0) + (if (pre_del) 1 else 0) + (if (post_ins) 1 else 0) + (if (post_del) 1 else 0)) == 3)))
             {
                 // Duplicate record.
-                try diffs.insert(
+                try diffsInsert(
                     allocator,
+                    &diffs,
                     equalities.items[equalities.items.len - 1],
-                    Diff.init(.delete, try allocator.dupe(u8, last_equality)),
+                    .delete,
+                    last_equality,
                 );
                 // Change second copy to insert.
                 diffs.items[equalities.items[equalities.items.len - 1] + 1].operation = .insert;
@@ -1388,10 +1404,20 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     }
 }
 
+fn diffsAppend(allocator: Allocator, diffs: *DiffList, op: Diff.Operation, text: []const u8) !void {
+    const new_text = try allocator.dupe(u8, text);
+    errdefer allocator.free(new_text);
+    try diffs.append(allocator, Diff{ .operation = op, .text = new_text });
+}
+
+fn diffsInsert(allocator: Allocator, diffs: *DiffList, index: usize, op: Diff.Operation, text: []const u8) !void {
+    const new_text = try allocator.dupe(u8, text);
+    errdefer allocator.free(new_text);
+    try diffs.insert(allocator, index, Diff{ .operation = op, .text = new_text });
+}
+
 // DONE [✅]: Allocate all text in diffs to
-// not cause segfault while freeing; not a problem
-// at the moment because we don't free anything :(
-// (or was it??)
+// not cause segfault while freeing
 
 test diffCommonPrefix {
     // Detect any common suffix.
