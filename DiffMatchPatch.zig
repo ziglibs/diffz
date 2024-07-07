@@ -131,7 +131,7 @@ fn diffInternal(
     // Check for equality (speedup).
     if (std.mem.eql(u8, before, after)) {
         var diffs = DiffList{};
-
+        errdefer deinitDiffList(allocator, &diffs);
         if (before.len != 0) {
             try diffs.ensureUnusedCapacity(allocator, 1);
             diffs.appendAssumeCapacity(Diff.init(
@@ -378,8 +378,14 @@ fn diffHalfMatch(
 
     // First check if the second quarter is the seed for a half-match.
     const half_match_1 = try dmp.diffHalfMatchInternal(allocator, long_text, short_text, (long_text.len + 3) / 4);
+    errdefer {
+        if (half_match_1) |h_m| h_m.deinit(allocator);
+    }
     // Check again based on the third quarter.
     const half_match_2 = try dmp.diffHalfMatchInternal(allocator, long_text, short_text, (long_text.len + 1) / 2);
+    errdefer {
+        if (half_match_2) |h_m| h_m.deinit(allocator);
+    }
 
     var half_match: ?HalfMatchResult = null;
     if (half_match_1 == null and half_match_2 == null) {
@@ -471,12 +477,14 @@ fn diffHalfMatchInternal(
         errdefer allocator.free(prefix_after);
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
         errdefer allocator.free(suffix_after);
+        const best_common_text = try best_common.toOwnedSlice(allocator);
+        errdefer allocator.free(best_common_text);
         return .{
             .prefix_before = prefix_before,
             .suffix_before = suffix_before,
             .prefix_after = prefix_after,
             .suffix_after = suffix_after,
-            .common_middle = try best_common.toOwnedSlice(allocator),
+            .common_middle = best_common_text,
         };
     } else {
         return null;
@@ -619,6 +627,7 @@ fn diffBisect(
     // Diff took too long and hit the deadline or
     // number of diffs equals number of characters, no commonality at all.
     var diffs = DiffList{};
+    errdefer deinitDiffList(allocator, &diffs);
     try diffs.ensureUnusedCapacity(allocator, 2);
     diffs.appendAssumeCapacity(Diff.init(
         .delete,
@@ -854,13 +863,12 @@ fn diffCharsToLines(
     defer text.deinit(allocator);
 
     for (diffs) |*d| {
-        text.items.len = 0;
         var j: usize = 0;
         while (j < d.text.len) : (j += 1) {
             try text.appendSlice(allocator, line_array[d.text[j]]);
         }
         allocator.free(d.text);
-        d.text = try allocator.dupe(u8, text.items);
+        d.text = try text.toOwnedSlice(allocator);
     }
 }
 
@@ -905,16 +913,15 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                             {
                                 const ii = pointer - count_delete - count_insert - 1;
                                 var nt = try allocator.alloc(u8, diffs.items[ii].text.len + common_length);
-
                                 const ot = diffs.items[ii].text;
                                 defer allocator.free(ot);
                                 @memcpy(nt[0..ot.len], ot);
                                 @memcpy(nt[ot.len..], text_insert.items[0..common_length]);
                                 diffs.items[ii].text = nt;
                             } else {
+                                try diffs.ensureUnusedCapacity(allocator, 1);
                                 const text = try allocator.dupe(u8, text_insert.items[0..common_length]);
-                                errdefer allocator.free(text);
-                                try diffs.insert(allocator, 0, Diff.init(.equal, text));
+                                diffs.insertAssumeCapacity(0, Diff.init(.equal, text));
                                 pointer += 1;
                             }
                             try text_insert.replaceRange(allocator, 0, common_length, &.{});
@@ -925,11 +932,11 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                         common_length = diffCommonSuffix(text_insert.items, text_delete.items);
                         if (common_length != 0) {
                             const old_text = diffs.items[pointer].text;
-                            defer allocator.free(old_text);
                             diffs.items[pointer].text = try std.mem.concat(allocator, u8, &.{
                                 text_insert.items[text_insert.items.len - common_length ..],
                                 old_text,
                             });
+                            defer allocator.free(old_text);
                             text_insert.items.len -= common_length;
                             text_delete.items.len -= common_length;
                         }
@@ -996,38 +1003,38 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
         {
             // This is a single edit surrounded by equalities.
             if (std.mem.endsWith(u8, diffs.items[pointer].text, diffs.items[pointer - 1].text)) {
+                const old_pt = diffs.items[pointer].text;
                 const pt = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer].text[0 .. diffs.items[pointer].text.len -
                         diffs.items[pointer - 1].text.len],
                 });
+                defer allocator.free(old_pt);
+                diffs.items[pointer].text = pt;
+                const old_pt1t = diffs.items[pointer + 1].text;
                 const p1t = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
-                const old_pt = diffs.items[pointer].text;
-                defer allocator.free(old_pt);
-                const old_pt1t = diffs.items[pointer + 1].text;
                 defer allocator.free(old_pt1t);
-                diffs.items[pointer].text = pt;
                 diffs.items[pointer + 1].text = p1t;
                 freeRangeDiffList(allocator, diffs, pointer - 1, 1);
                 try diffs.replaceRange(allocator, pointer - 1, 1, &.{});
                 changes = true;
             } else if (std.mem.startsWith(u8, diffs.items[pointer].text, diffs.items[pointer + 1].text)) {
+                const old_ptm1 = diffs.items[pointer - 1].text;
                 const pm1t = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
+                defer allocator.free(old_ptm1);
+                diffs.items[pointer - 1].text = pm1t;
+                const old_pt = diffs.items[pointer].text;
+                defer allocator.free(old_pt);
                 const pt = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer].text[diffs.items[pointer + 1].text.len..],
                     diffs.items[pointer + 1].text,
                 });
-                const old_ptm1 = diffs.items[pointer - 1].text;
-                defer allocator.free(old_ptm1);
-                const old_pt = diffs.items[pointer].text;
-                defer allocator.free(old_pt);
-                diffs.items[pointer - 1].text = pm1t;
                 diffs.items[pointer].text = pt;
                 freeRangeDiffList(allocator, diffs, pointer + 1, 1);
                 try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
@@ -1273,18 +1280,21 @@ pub fn diffCleanupSemanticLossless(
             if (!std.mem.eql(u8, diffs.items[pointer - 1].text, best_equality_1.items)) {
                 // We have an improvement, save it back to the diff.
                 if (best_equality_1.items.len != 0) {
-                    allocator.free(diffs.items[pointer - 1].text);
+                    const old_text = diffs.items[pointer - 1].text;
                     diffs.items[pointer - 1].text = try allocator.dupe(u8, best_equality_1.items);
+                    allocator.free(old_text);
                 } else {
                     const old_diff = diffs.orderedRemove(pointer - 1);
                     allocator.free(old_diff.text);
                     pointer -= 1;
                 }
-                allocator.free(diffs.items[pointer].text);
+                const old_text1 = diffs.items[pointer].text;
                 diffs.items[pointer].text = try allocator.dupe(u8, best_edit.items);
+                allocator.free(old_text1);
                 if (best_equality_2.items.len != 0) {
-                    allocator.free(diffs.items[pointer + 1].text);
+                    const old_text2 = diffs.items[pointer + 1].text;
                     diffs.items[pointer + 1].text = try allocator.dupe(u8, best_equality_2.items);
+                    allocator.free(old_text2);
                 } else {
                     const old_diff = diffs.orderedRemove(pointer + 1);
                     allocator.free(old_diff.text);
@@ -1518,108 +1528,161 @@ test diffCommonOverlap {
     try testing.expectEqual(@as(usize, 0), diffCommonOverlap("fi", "\u{fb01}")); // Unicode
 }
 
-test diffHalfMatch {
-    const allocator = testing.allocator;
+fn testDiffHalfMatch(
+    allocator: std.mem.Allocator,
+    params: struct {
+        dmp: DiffMatchPatch,
+        before: []const u8,
+        after: []const u8,
+        expected: ?HalfMatchResult,
+    },
+) !void {
+    const maybe_result = try params.dmp.diffHalfMatch(allocator, params.before, params.after);
+    defer if (maybe_result) |result| result.deinit(allocator);
+    try testing.expectEqualDeep(params.expected, maybe_result);
+}
 
-    var one_timeout = DiffMatchPatch{};
-    one_timeout.diff_timeout = 1;
-    const dh1 = try one_timeout.diffHalfMatch(allocator, "1234567890", "abcdef");
-    try testing.expectEqual(
-        @as(?HalfMatchResult, null),
-        dh1,
-    ); // No match #1
-    const dh2 = try one_timeout.diffHalfMatch(allocator, "12345", "23");
-    try testing.expectEqual(
-        @as(?HalfMatchResult, null),
-        dh2,
-    ); // No match #2
+test diffHalfMatch {
+    const one_timeout: DiffMatchPatch = .{ .diff_timeout = 1 };
+
+    // No match #1
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "1234567890",
+        .after = "abcdef",
+        .expected = null,
+    }});
+
+    // No match #2
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "12345",
+        .after = "23",
+        .expected = null,
+    }});
 
     // Single matches
-    var dh3 = (try one_timeout.diffHalfMatch(allocator, "1234567890", "a345678z")).?;
-    defer dh3.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "12",
-        .suffix_before = "90",
-        .prefix_after = "a",
-        .suffix_after = "z",
-        .common_middle = "345678",
-    }, dh3); // Single Match #1
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "1234567890",
+        .after = "a345678z",
+        .expected = .{
+            .prefix_before = "12",
+            .suffix_before = "90",
+            .prefix_after = "a",
+            .suffix_after = "z",
+            .common_middle = "345678",
+        },
+    }});
 
-    var dh4 = (try one_timeout.diffHalfMatch(allocator, "a345678z", "1234567890")).?;
-    defer dh4.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "a",
-        .suffix_before = "z",
-        .prefix_after = "12",
-        .suffix_after = "90",
-        .common_middle = "345678",
-    }, dh4); // Single Match #2
+    // Single Match #2
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "a345678z",
+        .after = "1234567890",
+        .expected = .{
+            .prefix_before = "a",
+            .suffix_before = "z",
+            .prefix_after = "12",
+            .suffix_after = "90",
+            .common_middle = "345678",
+        },
+    }});
 
-    var dh5 = (try one_timeout.diffHalfMatch(allocator, "abc56789z", "1234567890")).?;
-    defer dh5.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "abc",
-        .suffix_before = "z",
-        .prefix_after = "1234",
-        .suffix_after = "0",
-        .common_middle = "56789",
-    }, dh5); // Single Match #3
+    // Single Match #3
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "abc56789z",
+        .after = "1234567890",
+        .expected = .{
+            .prefix_before = "abc",
+            .suffix_before = "z",
+            .prefix_after = "1234",
+            .suffix_after = "0",
+            .common_middle = "56789",
+        },
+    }});
 
-    var dh6 = (try one_timeout.diffHalfMatch(allocator, "a23456xyz", "1234567890")).?;
-    defer dh6.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "a",
-        .suffix_before = "xyz",
-        .prefix_after = "1",
-        .suffix_after = "7890",
-        .common_middle = "23456",
-    }, dh6); // Single Match #4
+    // Single Match #4
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "a23456xyz",
+        .after = "1234567890",
+        .expected = .{
+            .prefix_before = "a",
+            .suffix_before = "xyz",
+            .prefix_after = "1",
+            .suffix_after = "7890",
+            .common_middle = "23456",
+        },
+    }});
 
-    // Multiple matches
-    var dh7 = (try one_timeout.diffHalfMatch(allocator, "121231234123451234123121", "a1234123451234z")).?;
-    defer dh7.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "12123",
-        .suffix_before = "123121",
-        .prefix_after = "a",
-        .suffix_after = "z",
-        .common_middle = "1234123451234",
-    }, dh7); // Multiple Matches #1
+    // Multiple matches #1
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "121231234123451234123121",
+        .after = "a1234123451234z",
+        .expected = .{
+            .prefix_before = "12123",
+            .suffix_before = "123121",
+            .prefix_after = "a",
+            .suffix_after = "z",
+            .common_middle = "1234123451234",
+        },
+    }});
 
-    var dh8 = (try one_timeout.diffHalfMatch(allocator, "x-=-=-=-=-=-=-=-=-=-=-=-=", "xx-=-=-=-=-=-=-=")).?;
-    defer dh8.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "",
-        .suffix_before = "-=-=-=-=-=",
-        .prefix_after = "x",
-        .suffix_after = "",
-        .common_middle = "x-=-=-=-=-=-=-=",
-    }, dh8); // Multiple Matches #2
+    // Multiple Matches #2
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "x-=-=-=-=-=-=-=-=-=-=-=-=",
+        .after = "xx-=-=-=-=-=-=-=",
+        .expected = .{
+            .prefix_before = "",
+            .suffix_before = "-=-=-=-=-=",
+            .prefix_after = "x",
+            .suffix_after = "",
+            .common_middle = "x-=-=-=-=-=-=-=",
+        },
+    }});
 
-    var dh9 = (try one_timeout.diffHalfMatch(allocator, "-=-=-=-=-=-=-=-=-=-=-=-=y", "-=-=-=-=-=-=-=yy")).?;
-    defer dh9.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "-=-=-=-=-=",
-        .suffix_before = "",
-        .prefix_after = "",
-        .suffix_after = "y",
-        .common_middle = "-=-=-=-=-=-=-=y",
-    }, dh9); // Multiple Matches #3
+    // Multiple Matches #3
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "-=-=-=-=-=-=-=-=-=-=-=-=y",
+        .after = "-=-=-=-=-=-=-=yy",
+        .expected = .{
+            .prefix_before = "-=-=-=-=-=",
+            .suffix_before = "",
+            .prefix_after = "",
+            .suffix_after = "y",
+            .common_middle = "-=-=-=-=-=-=-=y",
+        },
+    }});
 
     // Other cases
-    // Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
-    var dh10 = (try one_timeout.diffHalfMatch(allocator, "qHilloHelloHew", "xHelloHeHulloy")).?;
-    defer dh10.deinit(allocator);
-    try testing.expectEqualDeep(HalfMatchResult{
-        .prefix_before = "qHillo",
-        .suffix_before = "w",
-        .prefix_after = "x",
-        .suffix_after = "Hulloy",
-        .common_middle = "HelloHe",
-    }, dh10); // Non-optimal halfmatch
 
-    one_timeout.diff_timeout = 0;
-    try testing.expectEqualDeep(@as(?HalfMatchResult, null), try one_timeout.diffHalfMatch(allocator, "qHilloHelloHew", "xHelloHeHulloy")); // Non-optimal halfmatch
+    // Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
+    // Non-optimal halfmatch
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = one_timeout,
+        .before = "qHilloHelloHew",
+        .after = "xHelloHeHulloy",
+        .expected = .{
+            .prefix_before = "qHillo",
+            .suffix_before = "w",
+            .prefix_after = "x",
+            .suffix_after = "Hulloy",
+            .common_middle = "HelloHe",
+        },
+    }});
+
+    // Non-optimal halfmatch
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
+        .dmp = .{ .diff_timeout = 0 },
+        .before = "qHilloHelloHew",
+        .after = "xHelloHeHulloy",
+        .expected = null,
+    }});
 }
 
 test diffLinesToChars {
@@ -1695,404 +1758,387 @@ test diffLinesToChars {
     // try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items);
 }
 
-test diffCharsToLines {
-    const allocator = std.testing.allocator;
-
-    // Convert chars up to lines.
-    var diffs = try DiffList.initCapacity(allocator, 2);
+fn testDiffCharsToLines(
+    allocator: std.mem.Allocator,
+    params: struct {
+        diffs: []const Diff,
+        line_array: []const []const u8,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try DiffList.initCapacity(allocator, params.diffs.len);
     defer deinitDiffList(allocator, &diffs);
 
-    diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "\u{0001}\u{0002}\u{0001}") });
-    diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "\u{0002}\u{0001}\u{0002}") });
+    for (params.diffs) |item| {
+        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+    }
 
-    var tmp_vector = std.ArrayList([]const u8).init(allocator);
-    defer tmp_vector.deinit();
-    try tmp_vector.append("");
-    try tmp_vector.append("alpha\n");
-    try tmp_vector.append("beta\n");
-    try diffCharsToLines(allocator, diffs.items, tmp_vector.items);
+    try diffCharsToLines(allocator, diffs.items, params.line_array);
 
-    try testing.expectEqualDeep(&[_]Diff{
-        .{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
-        .{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
-    }, diffs.items);
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
+
+test diffCharsToLines {
+    // Convert chars up to lines.
+    var diff_list = DiffList{};
+    defer deinitDiffList(testing.allocator, &diff_list);
+    try diff_list.ensureTotalCapacity(testing.allocator, 2);
+    diff_list.appendSliceAssumeCapacity(&.{
+        Diff.init(.equal, try testing.allocator.dupe(u8, "\u{0001}\u{0002}\u{0001}")),
+        Diff.init(.insert, try testing.allocator.dupe(u8, "\u{0002}\u{0001}\u{0002}")),
+    });
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCharsToLines, .{.{
+        .diffs = diff_list.items,
+        .line_array = &[_][]const u8{
+            "",
+            "alpha\n",
+            "beta\n",
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
+            .{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
+        },
+    }});
 
     // TODO: Implement exhaustive tests
 }
 
+fn testDiffCleanupMerge(allocator: std.mem.Allocator, params: struct {
+    input: []const Diff,
+    expected: []const Diff,
+}) !void {
+    var diffs = try DiffList.initCapacity(allocator, params.input.len);
+    defer deinitDiffList(allocator, &diffs);
+
+    for (params.input) |item| {
+        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+    }
+
+    try diffCleanupMerge(allocator, &diffs);
+
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
+
 test diffCleanupMerge {
-    const allocator = testing.allocator;
     // Cleanup a messy diff.
 
-    {
-        // No change case
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "c") });
-
-        try diffCleanupMerge(allocator, &diffs);
-        try diffCleanupMerge(allocator, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } }), diffs.items); // No change case
-        try diffCleanupMerge(allocator, &diffs);
-        try testing.expectEqualDeep(@as([]const Diff, &[_]Diff{ .{ .operation = .equal, .text = "a" }, .{ .operation = .delete, .text = "b" }, .{ .operation = .insert, .text = "c" } }), diffs.items); // No change case
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // No change case
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "b" },
             .{ .operation = .insert, .text = "c" },
-        }, diffs.items);
-    }
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "b" },
+            .{ .operation = .insert, .text = "c" },
+        },
+    }});
 
-    {
-        // Merge equalities
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Merge equalities
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .equal, .text = "b" },
+            .{ .operation = .equal, .text = "c" },
+        },
+        .expected = &.{
             .{ .operation = .equal, .text = "abc" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Merge deletions
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "c") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Merge deletions
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .delete, .text = "b" },
+            .{ .operation = .delete, .text = "c" },
+        },
+        .expected = &.{
             .{ .operation = .delete, .text = "abc" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-
-        // Merge insertions
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "c") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Merge insertions
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .insert, .text = "a" },
+            .{ .operation = .insert, .text = "b" },
+            .{ .operation = .insert, .text = "c" },
+        },
+        .expected = &.{
             .{ .operation = .insert, .text = "abc" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Merge interweave
-        var diffs = try DiffList.initCapacity(allocator, 6);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "c") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "d") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "e") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "f") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Merge interweave
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .insert, .text = "b" },
+            .{ .operation = .delete, .text = "c" },
+            .{ .operation = .insert, .text = "d" },
+            .{ .operation = .equal, .text = "e" },
+            .{ .operation = .equal, .text = "f" },
+        },
+        .expected = &.{
             .{ .operation = .delete, .text = "ac" },
             .{ .operation = .insert, .text = "bd" },
             .{ .operation = .equal, .text = "ef" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Prefix and suffix detection
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "abc") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "dc") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Prefix and suffix detection
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .insert, .text = "abc" },
+            .{ .operation = .delete, .text = "dc" },
+        },
+        .expected = &.{
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "d" },
             .{ .operation = .insert, .text = "b" },
             .{ .operation = .equal, .text = "c" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Prefix and suffix detection with equalities
-        var diffs = try DiffList.initCapacity(allocator, 5);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "x") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "abc") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "dc") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "y") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Prefix and suffix detection with equalities
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "x" },
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .insert, .text = "abc" },
+            .{ .operation = .delete, .text = "dc" },
+            .{ .operation = .equal, .text = "y" },
+        },
+        .expected = &.{
             .{ .operation = .equal, .text = "xa" },
             .{ .operation = .delete, .text = "d" },
             .{ .operation = .insert, .text = "b" },
             .{ .operation = .equal, .text = "cy" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Slide edit left
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ba") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Slide edit left
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .insert, .text = "ba" },
+            .{ .operation = .equal, .text = "c" },
+        },
+        .expected = &.{
             .{ .operation = .insert, .text = "ab" },
             .{ .operation = .equal, .text = "ac" },
-        }, diffs.items);
+        },
+    }});
+
+    // Slide edit right
+    if (false) { // TODO #23 This test needs to dupe its data
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+            .input = &.{
+                .{ .operation = .equal, .text = "c" },
+                .{ .operation = .insert, .text = "ab" },
+                .{ .operation = .equal, .text = "a" },
+            },
+            .expected = &.{
+                .{ .operation = .equal, .text = "ca" },
+                .{ .operation = .insert, .text = "ba" },
+            },
+        }});
     }
 
-    {
+    // Slide edit left recursive
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "b" },
+            .{ .operation = .equal, .text = "c" },
+            .{ .operation = .delete, .text = "ac" },
+            .{ .operation = .equal, .text = "x" },
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "abc" },
+            .{ .operation = .equal, .text = "acx" },
+        },
+    }});
 
-        // Slide edit right
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ab") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            .{ .operation = .equal, .text = "ca" },
-            .{ .operation = .insert, .text = "ba" },
-        }, diffs.items);
-    }
-
-    {
-
-        // Slide edit left recursive
-        var diffs = try DiffList.initCapacity(allocator, 5);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ac") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "x") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&.{
-            Diff.init(.delete, "abc"),
-            Diff.init(.equal, "acx"),
-        }, diffs.items);
-    }
-
-    {
+    if (false) { // TODO #23 This test needs to dupe its data
         // Slide edit right recursive
-        var diffs = try DiffList.initCapacity(allocator, 5);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "x") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ca") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&.{
-            Diff.init(.equal, "xca"),
-            Diff.init(.delete, "cba"),
-        }, diffs.items);
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+            .input = &.{
+                .{ .operation = .equal, .text = "x" },
+                .{ .operation = .delete, .text = "ca" },
+                .{ .operation = .equal, .text = "c" },
+                .{ .operation = .delete, .text = "b" },
+                .{ .operation = .equal, .text = "a" },
+            },
+            .expected = &.{
+                .{ .operation = .equal, .text = "xca" },
+                .{ .operation = .delete, .text = "cba" },
+            },
+        }});
     }
 
-    {
-        // Empty merge
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
+    // Empty merge
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "b" },
+            .{ .operation = .insert, .text = "ab" },
+            .{ .operation = .equal, .text = "c" },
+        },
+        .expected = &.{
+            .{ .operation = .insert, .text = "a" },
+            .{ .operation = .equal, .text = "bc" },
+        },
+    }});
 
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ab") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "c") });
+    // Empty equality
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "" },
+            .{ .operation = .insert, .text = "a" },
+            .{ .operation = .equal, .text = "b" },
+        },
+        .expected = &.{
+            .{ .operation = .insert, .text = "a" },
+            .{ .operation = .equal, .text = "b" },
+        },
+    }});
+}
 
-        try diffCleanupMerge(allocator, &diffs);
+fn testDiffCleanupSemanticLossless(
+    allocator: std.mem.Allocator,
+    params: struct {
+        input: []const Diff,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try DiffList.initCapacity(allocator, params.input.len);
+    defer deinitDiffList(allocator, &diffs);
 
-        try testing.expectEqualDeep(&.{
-            Diff.init(.insert, "a"),
-            Diff.init(.equal, "bc"),
-        }, diffs.items);
+    for (params.input) |item| {
+        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
     }
 
-    {
-        // Empty equality
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
+    try diffCleanupSemanticLossless(allocator, &diffs);
 
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = "" });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "b") });
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
 
-        try diffCleanupMerge(allocator, &diffs);
-
-        try testing.expectEqualDeep(&.{
-            Diff.init(.insert, "a"),
-            Diff.init(.equal, "b"),
-        }, diffs.items);
+fn sliceToDiffList(allocator: Allocator, diff_slice: []const Diff) !DiffList {
+    var diff_list = DiffList{};
+    errdefer deinitDiffList(allocator, &diff_list);
+    try diff_list.ensureTotalCapacity(allocator, diff_slice.len);
+    for (diff_slice) |d| {
+        diff_list.appendAssumeCapacity(Diff.init(
+            d.operation,
+            try allocator.dupe(u8, d.text),
+        ));
     }
+    return diff_list;
 }
 
 test diffCleanupSemanticLossless {
-    const allocator = testing.allocator;
+    // Null case
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &[_]Diff{},
+        .expected = &[_]Diff{},
+    }});
 
-    {
-        // Null case
-        var diffs: DiffList = .{};
-        try diffCleanupSemanticLossless(allocator, &diffs);
-        try testing.expectEqualDeep(&[_]Diff{}, diffs.items);
-    }
+    //defer deinitDiffList(allocator, &diffs);
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "AAA\r\n\r\nBBB" },
+            .{ .operation = .insert, .text = "\r\nDDD\r\n\r\nBBB" },
+            .{ .operation = .equal, .text = "\r\nEEE" },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "AAA\r\n\r\n" },
+            .{ .operation = .insert, .text = "BBB\r\nDDD\r\n\r\n" },
+            .{ .operation = .equal, .text = "BBB\r\nEEE" },
+        },
+    }});
 
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "AAA\r\nBBB" },
+            .{ .operation = .insert, .text = " DDD\r\nBBB" },
+            .{ .operation = .equal, .text = " EEE" },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "AAA\r\n" },
+            .{ .operation = .insert, .text = "BBB DDD\r\n" },
+            .{ .operation = .equal, .text = "BBB EEE" },
+        },
+    }});
 
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "AAA\r\n\r\nBBB") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "\r\nDDD\r\n\r\nBBB") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "\r\nEEE") });
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "The c" },
+            .{ .operation = .insert, .text = "ow and the c" },
+            .{ .operation = .equal, .text = "at." },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "The " },
+            .{ .operation = .insert, .text = "cow and the " },
+            .{ .operation = .equal, .text = "cat." },
+        },
+    }});
 
-        try diffCleanupSemanticLossless(allocator, &diffs);
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "The-c" },
+            .{ .operation = .insert, .text = "ow-and-the-c" },
+            .{ .operation = .equal, .text = "at." },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "The-" },
+            .{ .operation = .insert, .text = "cow-and-the-" },
+            .{ .operation = .equal, .text = "cat." },
+        },
+    }});
 
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.equal, "AAA\r\n\r\n"),
-            Diff.init(.insert, "BBB\r\nDDD\r\n\r\n"),
-            Diff.init(.equal, "BBB\r\nEEE"),
-        }, diffs.items);
-    }
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "a" },
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .equal, .text = "ax" },
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .equal, .text = "aax" },
+        },
+    }});
 
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "xa" },
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .equal, .text = "a" },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "xaa" },
+            .{ .operation = .delete, .text = "a" },
+        },
+    }});
 
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "AAA\r\nBBB") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, " DDD\r\nBBB") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, " EEE") });
-
-        try diffCleanupSemanticLossless(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.equal, "AAA\r\n"),
-            Diff.init(.insert, "BBB DDD\r\n"),
-            Diff.init(.equal, "BBB EEE"),
-        }, diffs.items);
-    }
-
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The c") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ow and the c") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "at.") });
-
-        try diffCleanupSemanticLossless(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.equal, "The "),
-            Diff.init(.insert, "cow and the "),
-            Diff.init(.equal, "cat."),
-        }, diffs.items);
-    }
-
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The-c") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ow-and-the-c") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "at.") });
-
-        try diffCleanupSemanticLossless(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.equal, "The-"),
-            Diff.init(.insert, "cow-and-the-"),
-            Diff.init(.equal, "cat."),
-        }, diffs.items);
-    }
-
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "ax") });
-
-        try diffCleanupSemanticLossless(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.delete, "a"),
-            Diff.init(.equal, "aax"),
-        }, diffs.items);
-    }
-
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "xa") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "a") });
-
-        try diffCleanupSemanticLossless(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.equal, "xaa"),
-            Diff.init(.delete, "a"),
-        }, diffs.items);
-    }
-
-    {
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The xxx. The ") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "zzz. The ") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "yyy.") });
-
-        try diffCleanupSemanticLossless(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            Diff.init(.equal, "The xxx."),
-            Diff.init(.insert, " The zzz."),
-            Diff.init(.equal, " The yyy."),
-        }, diffs.items);
-    }
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemanticLossless, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "The xxx. The " },
+            .{ .operation = .insert, .text = "zzz. The " },
+            .{ .operation = .equal, .text = "yyy." },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "The xxx." },
+            .{ .operation = .insert, .text = " The zzz." },
+            .{ .operation = .equal, .text = " The yyy." },
+        },
+    }});
 }
 
+/// TODO this function obviously leaks memory on error
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
     var text = [2]std.ArrayList(u8){
         std.ArrayList(u8).init(allocator),
@@ -2113,205 +2159,227 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
     };
 }
 
-test diffBisect {
-    const allocator = testing.allocator;
+fn testDiffBisect(
+    allocator: std.mem.Allocator,
+    params: struct {
+        dmp: DiffMatchPatch,
+        before: []const u8,
+        after: []const u8,
+        deadline: u64,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try params.dmp.diffBisect(allocator, params.before, params.after, params.deadline);
+    defer deinitDiffList(allocator, &diffs);
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
 
+test diffBisect {
     const this: DiffMatchPatch = .{ .diff_timeout = 0 };
 
     const a = "cat";
     const b = "map";
 
-    {
-        // Normal.
-
-        // Since the resulting diff hasn't been normalized, it would be ok if
-        // the insertion and deletion pairs are swapped.
-        // If the order changes, tweak this test as required.
-        // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
-        var diffs = try this.diffBisect(
-            allocator,
-            a,
-            b,
-            std.math.maxInt(u64),
-        );
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Normal
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
+        .dmp = this,
+        .before = a,
+        .after = b,
+        .deadline = std.math.maxInt(u64), // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
+        .expected = &.{
             .{ .operation = .delete, .text = "c" },
             .{ .operation = .insert, .text = "m" },
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "t" },
             .{ .operation = .insert, .text = "p" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Timeout.
-        var diffs2 = DiffList{};
-        defer deinitDiffList(allocator, &diffs2);
-        try diffs2.appendSlice(allocator, &.{
-            Diff.init(.delete, try allocator.dupe(u8, "cat")),
-            Diff.init(.insert, try allocator.dupe(u8, "map")),
-        });
-        // Travis TODO not sure if 0 is correct for  DateTime.MinValue
-        var diffs = try this.diffBisect(allocator, a, b, 0);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Timeout
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
+        .dmp = this,
+        .before = a,
+        .after = b,
+        .deadline = 0, // Travis TODO not sure if 0 is correct for  DateTime.MinValue
+        .expected = &.{
             .{ .operation = .delete, .text = "cat" },
             .{ .operation = .insert, .text = "map" },
-        }, diffs.items);
-    }
+        },
+    }});
+}
+
+fn testDiff(
+    allocator: std.mem.Allocator,
+    params: struct {
+        dmp: DiffMatchPatch,
+        before: []const u8,
+        after: []const u8,
+        check_lines: bool,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try params.dmp.diff(allocator, params.before, params.after, params.check_lines);
+    defer deinitDiffList(allocator, &diffs);
+    try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
 test diff {
-    const allocator = testing.allocator;
-
     const this: DiffMatchPatch = .{ .diff_timeout = 0 };
 
-    {
-        // diff: Null case.
-        var diffs = try this.diff(allocator, "", "", false);
-        defer deinitDiffList(allocator, &diffs);
+    //  Null case.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "",
+        .after = "",
+        .check_lines = false,
+        .expected = &[_]Diff{},
+    }});
 
-        try testing.expectEqual(0, diffs.items.len);
-    }
-
-    {
-        // diff: Equality.
-        var diffs = try this.diff(allocator, "abc", "abc", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    //  Equality.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "abc",
+        .after = "abc",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .equal, .text = "abc" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Simple insertion.
-        var diffs = try this.diff(allocator, "abc", "ab123c", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Simple insertion.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "abc",
+        .after = "ab123c",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .equal, .text = "ab" },
             .{ .operation = .insert, .text = "123" },
             .{ .operation = .equal, .text = "c" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Simple deletion.
-        var diffs = try this.diff(allocator, "a123bc", "abc", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Simple deletion.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "a123bc",
+        .after = "abc",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "123" },
             .{ .operation = .equal, .text = "bc" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Two insertions.
-        var diffs = try this.diff(allocator, "abc", "a123b456c", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Two insertions.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "abc",
+        .after = "a123b456c",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .insert, .text = "123" },
             .{ .operation = .equal, .text = "b" },
             .{ .operation = .insert, .text = "456" },
             .{ .operation = .equal, .text = "c" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Two deletions.
-        var diffs = try this.diff(allocator, "a123b456c", "abc", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Two deletions.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "a123b456c",
+        .after = "abc",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "123" },
             .{ .operation = .equal, .text = "b" },
             .{ .operation = .delete, .text = "456" },
             .{ .operation = .equal, .text = "c" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    // Perform a real diff.
-    {
-        // diff: Simple case #1.
-        var diffs = try this.diff(allocator, "a", "b", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Simple case #1
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "a",
+        .after = "b",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .delete, .text = "a" },
             .{ .operation = .insert, .text = "b" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Simple case #2.
-        var diffs = try this.diff(allocator, "Apples are a fruit.", "Bananas are also fruit.", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Simple case #2
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "Apples are a fruit.",
+        .after = "Bananas are also fruit.",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .delete, .text = "Apple" },
             .{ .operation = .insert, .text = "Banana" },
             .{ .operation = .equal, .text = "s are a" },
             .{ .operation = .insert, .text = "lso" },
             .{ .operation = .equal, .text = " fruit." },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Simple case #3.
-        var diffs = try this.diff(allocator, "ax\t", "\u{0680}x\x00", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Simple case #3
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "ax\t",
+        .after = "\u{0680}x\x00",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .delete, .text = "a" },
             .{ .operation = .insert, .text = "\u{0680}" },
             .{ .operation = .equal, .text = "x" },
             .{ .operation = .delete, .text = "\t" },
             .{ .operation = .insert, .text = "\x00" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Overlap #1.
-        var diffs = try this.diff(allocator, "1ayb2", "abxab", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Overlap #1
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "1ayb2",
+        .after = "abxab",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .delete, .text = "1" },
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "y" },
             .{ .operation = .equal, .text = "b" },
             .{ .operation = .delete, .text = "2" },
             .{ .operation = .insert, .text = "xab" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Overlap #2.
-        var diffs = try this.diff(allocator, "abcy", "xaxcxabc", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Overlap #2
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "abcy",
+        .after = "xaxcxabc",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .insert, .text = "xaxcx" },
             .{ .operation = .equal, .text = "abc" },
             .{ .operation = .delete, .text = "y" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Overlap #3.
-        var diffs = try this.diff(allocator, "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg", "a-bcd-efghijklmnopqrs", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Overlap #3
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg",
+        .after = "a-bcd-efghijklmnopqrs",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .delete, .text = "ABCD" },
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .delete, .text = "=" },
@@ -2321,22 +2389,26 @@ test diff {
             .{ .operation = .insert, .text = "-" },
             .{ .operation = .equal, .text = "efghijklmnopqrs" },
             .{ .operation = .delete, .text = "EFGHIJKLMNOefg" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // diff: Large equality.
-        var diffs = try this.diff(allocator, "a [[Pennsylvania]] and [[New", " and [[Pennsylvania]]", false);
-        defer deinitDiffList(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Large equality
+    try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
+        .dmp = this,
+        .before = "a [[Pennsylvania]] and [[New",
+        .after = " and [[Pennsylvania]]",
+        .check_lines = false,
+        .expected = &.{
             .{ .operation = .insert, .text = " " },
             .{ .operation = .equal, .text = "a" },
             .{ .operation = .insert, .text = "nd" },
             .{ .operation = .equal, .text = " [[Pennsylvania]]" },
             .{ .operation = .delete, .text = " and [[New" },
-        }, diffs.items);
-    }
+        },
+    }});
+
+    const allocator = testing.allocator;
+    // TODO these tests should be checked for allocation failure
 
     // Increase the text lengths by 1024 times to ensure a timeout.
     {
@@ -2418,205 +2490,182 @@ test diff {
     }
 }
 
-test diffCleanupSemantic {
-    const allocator = testing.allocator;
+fn testDiffCleanupSemantic(
+    allocator: std.mem.Allocator,
+    params: struct {
+        input: []const Diff,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try DiffList.initCapacity(allocator, params.input.len);
+    defer deinitDiffList(allocator, &diffs);
 
-    {
-        // Null case.
-        var diffs: DiffList = .{};
-        defer deinitDiffList(allocator, &diffs);
-        try diffCleanupSemantic(allocator, &diffs);
-        try testing.expectEqual(@as(usize, 0), diffs.items.len); // Null case
+    for (params.input) |item| {
+        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
     }
 
-    {
-        // No elimination #1
-        var diffs = try DiffList.initCapacity(allocator, 4);
-        defer deinitDiffList(allocator, &diffs);
+    try diffCleanupSemantic(allocator, &diffs);
 
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ab") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "cd") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "12") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "e") });
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
 
-        try diffCleanupSemantic(allocator, &diffs);
+test diffCleanupSemantic {
+    // Null case.
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &[_]Diff{},
+        .expected = &[_]Diff{},
+    }});
 
-        try testing.expectEqualDeep(&[_]Diff{
+    // No elimination #1
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
             .{ .operation = .delete, .text = "ab" },
             .{ .operation = .insert, .text = "cd" },
             .{ .operation = .equal, .text = "12" },
             .{ .operation = .delete, .text = "e" },
-        }, diffs.items);
-    }
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "cd" },
+            .{ .operation = .equal, .text = "12" },
+            .{ .operation = .delete, .text = "e" },
+        },
+    }});
 
-    {
-        // No elimination #2
-        var diffs = try DiffList.initCapacity(allocator, 4);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abc") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "ABC") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "1234") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "wxyz") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // No elimination #2
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
             .{ .operation = .delete, .text = "abc" },
             .{ .operation = .insert, .text = "ABC" },
             .{ .operation = .equal, .text = "1234" },
             .{ .operation = .delete, .text = "wxyz" },
-        }, diffs.items);
-    }
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "abc" },
+            .{ .operation = .insert, .text = "ABC" },
+            .{ .operation = .equal, .text = "1234" },
+            .{ .operation = .delete, .text = "wxyz" },
+        },
+    }});
 
-    {
-        // Simple elimination
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "a") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "b") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "c") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Simple elimination
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "a" },
+            .{ .operation = .equal, .text = "b" },
+            .{ .operation = .delete, .text = "c" },
+        },
+        .expected = &.{
             .{ .operation = .delete, .text = "abc" },
             .{ .operation = .insert, .text = "b" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Backpass elimination
-        var diffs = try DiffList.initCapacity(allocator, 5);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ab") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "cd") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "e") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "f") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "g") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Backpass elimination
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .equal, .text = "cd" },
+            .{ .operation = .delete, .text = "e" },
+            .{ .operation = .equal, .text = "f" },
+            .{ .operation = .insert, .text = "g" },
+        },
+        .expected = &.{
             .{ .operation = .delete, .text = "abcdef" },
             .{ .operation = .insert, .text = "cdfg" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Multiple elimination
-        var diffs = try DiffList.initCapacity(allocator, 9);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "1") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "A") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "B") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "2") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "_") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "1") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "A") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "B") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "2") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Multiple elimination
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .insert, .text = "1" },
+            .{ .operation = .equal, .text = "A" },
+            .{ .operation = .delete, .text = "B" },
+            .{ .operation = .insert, .text = "2" },
+            .{ .operation = .equal, .text = "_" },
+            .{ .operation = .insert, .text = "1" },
+            .{ .operation = .equal, .text = "A" },
+            .{ .operation = .delete, .text = "B" },
+            .{ .operation = .insert, .text = "2" },
+        },
+        .expected = &.{
             .{ .operation = .delete, .text = "AB_AB" },
             .{ .operation = .insert, .text = "1A2_1A2" },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // Word boundaries
-        var diffs = try DiffList.initCapacity(allocator, 3);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "The c") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "ow and the c") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "at.") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // Word boundaries
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "The c" },
+            .{ .operation = .delete, .text = "ow and the c" },
+            .{ .operation = .equal, .text = "at." },
+        },
+        .expected = &.{
             .{ .operation = .equal, .text = "The " },
             .{ .operation = .delete, .text = "cow and the " },
             .{ .operation = .equal, .text = "cat." },
-        }, diffs.items);
-    }
+        },
+    }});
 
-    {
-        // No overlap elimination
-        var diffs = try DiffList.initCapacity(allocator, 2);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abcxx") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "xxdef") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
+    // No overlap elimination
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
             .{ .operation = .delete, .text = "abcxx" },
             .{ .operation = .insert, .text = "xxdef" },
-        }, diffs.items);
-    }
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "abcxx" },
+            .{ .operation = .insert, .text = "xxdef" },
+        },
+    }});
 
-    {
+    if (false) { // TODO #23 This test needs to dupe its data
         // Overlap elimination
-        var diffs = try DiffList.initCapacity(allocator, 2);
-        defer deinitDiffList(allocator, &diffs);
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+            .input = &.{
+                .{ .operation = .delete, .text = "abcxxx" },
+                .{ .operation = .insert, .text = "xxxdef" },
+            },
+            .expected = &.{
+                .{ .operation = .delete, .text = "abc" },
+                .{ .operation = .equal, .text = "xxx" },
+                .{ .operation = .insert, .text = "def" },
+            },
+        }});
 
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abcxxx") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "xxxdef") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            .{ .operation = .delete, .text = "abc" },
-            .{ .operation = .equal, .text = "xxx" },
-            .{ .operation = .insert, .text = "def" },
-        }, diffs.items);
-    }
-
-    {
         // Reverse overlap elimination
-        var diffs = try DiffList.initCapacity(allocator, 2);
-        defer deinitDiffList(allocator, &diffs);
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+            .input = &.{
+                .{ .operation = .delete, .text = "xxxabc" },
+                .{ .operation = .insert, .text = "defxxx" },
+            },
+            .expected = &.{
+                .{ .operation = .insert, .text = "def" },
+                .{ .operation = .equal, .text = "xxx" },
+                .{ .operation = .delete, .text = "abc" },
+            },
+        }});
 
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "xxxabc") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "defxxx") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            .{ .operation = .insert, .text = "def" },
-            .{ .operation = .equal, .text = "xxx" },
-            .{ .operation = .delete, .text = "abc" },
-        }, diffs.items);
-    }
-
-    {
         // Two overlap eliminations
-        var diffs = try DiffList.initCapacity(allocator, 5);
-        defer deinitDiffList(allocator, &diffs);
-
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "abcd1212") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "1212efghi") });
-        diffs.appendAssumeCapacity(.{ .operation = .equal, .text = try allocator.dupe(u8, "----") });
-        diffs.appendAssumeCapacity(.{ .operation = .delete, .text = try allocator.dupe(u8, "A3") });
-        diffs.appendAssumeCapacity(.{ .operation = .insert, .text = try allocator.dupe(u8, "3BC") });
-
-        try diffCleanupSemantic(allocator, &diffs);
-
-        try testing.expectEqualDeep(&[_]Diff{
-            .{ .operation = .delete, .text = "abcd" },
-            .{ .operation = .equal, .text = "1212" },
-            .{ .operation = .insert, .text = "efghi" },
-            .{ .operation = .equal, .text = "----" },
-            .{ .operation = .delete, .text = "A" },
-            .{ .operation = .equal, .text = "3" },
-            .{ .operation = .insert, .text = "BC" },
-        }, diffs.items);
+        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+            .input = &.{
+                .{ .operation = .delete, .text = "abcd1212" },
+                .{ .operation = .insert, .text = "1212efghi" },
+                .{ .operation = .equal, .text = "----" },
+                .{ .operation = .delete, .text = "A3" },
+                .{ .operation = .insert, .text = "3BC" },
+            },
+            .expected = &.{
+                .{ .operation = .delete, .text = "abcd" },
+                .{ .operation = .equal, .text = "1212" },
+                .{ .operation = .insert, .text = "efghi" },
+                .{ .operation = .equal, .text = "----" },
+                .{ .operation = .delete, .text = "A" },
+                .{ .operation = .equal, .text = "3" },
+                .{ .operation = .insert, .text = "BC" },
+            },
+        }});
     }
 }
