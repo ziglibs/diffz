@@ -3117,18 +3117,6 @@ fn diffsInsert(allocator: Allocator, diffs: *DiffList, index: usize, op: Diff.Op
     try diffs.insert(allocator, index, Diff{ .operation = op, .text = new_text });
 }
 
-fn diffsAppend(allocator: Allocator, diffs: *DiffList, op: Diff.Operation, text: []const u8) !void {
-    const new_text = try allocator.dupe(u8, text);
-    errdefer allocator.free(new_text);
-    try diffs.append(allocator, Diff{ .operation = op, .text = new_text });
-}
-
-fn diffsInsert(allocator: Allocator, diffs: *DiffList, index: usize, op: Diff.Operation, text: []const u8) !void {
-    const new_text = try allocator.dupe(u8, text);
-    errdefer allocator.free(new_text);
-    try diffs.insert(allocator, index, Diff{ .operation = op, .text = new_text });
-}
-
 // DONE [✅]: Allocate all text in diffs to
 // not cause segfault while freeing
 
