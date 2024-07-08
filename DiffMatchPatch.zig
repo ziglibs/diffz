@@ -2305,110 +2305,6 @@ fn matchBitap(
     return best_loc;
 }
 
-fn testMatchBitap(
-    allocator: Allocator,
-    dmp: DiffMatchPatch,
-    params: struct {
-        text: []const u8,
-        pattern: []const u8,
-        loc: usize,
-        expect: ?usize,
-    },
-) !void {
-    const best_loc = try dmp.matchBitap(
-        allocator,
-        params.text,
-        params.pattern,
-        params.loc,
-    );
-    try testing.expectEqual(params.expect, best_loc);
-}
-
-test "matchBitap" {
-    var dmp = DiffMatchPatch{};
-    dmp.match_distance = 500;
-    dmp.match_threshold = 0.5;
-    // match_bitap: Exact match #1.
-    try testing.checkAllAllocationFailures(
-        testing.allocator,
-        testMatchBitap,
-        .{
-            dmp,
-            .{
-                .text = "abcdefghijk",
-                .pattern = "fgh",
-                .loc = 5,
-                .expect = 5,
-            },
-        },
-    );
-
-    // match_bitap: Exact match #2.
-    try testing.checkAllAllocationFailures(
-        testing.allocator,
-        testMatchBitap,
-        .{
-            dmp,
-            .{
-                .text = "abcdefghijk",
-                .pattern = "fgh",
-                .loc = 0,
-                .expect = 5,
-            },
-        },
-    );
-    // Fuzzy match #1
-    try testing.checkAllAllocationFailures(
-        testing.allocator,
-        testMatchBitap,
-        .{
-            dmp,
-            .{
-                .text = "abcdefghijk",
-                .pattern = "efxhi",
-                .loc = 0,
-                .expect = 4,
-            },
-        },
-    );
-
-    //    assertEquals("match_bitap: .", 4, this.match_bitap("abcdefghijk", "efxhi", 0));
-    //
-    //    assertEquals("match_bitap: Fuzzy match #2.", 2, this.match_bitap("abcdefghijk", "cdefxyhijk", 5));
-    //
-    //    assertEquals("match_bitap: Fuzzy match #3.", -1, this.match_bitap("abcdefghijk", "bxy", 1));
-    //
-    //    assertEquals("match_bitap: Overflow.", 2, this.match_bitap("123456789xx0", "3456789x0", 2));
-    //
-    //    assertEquals("match_bitap: Before start match.", 0, this.match_bitap("abcdef", "xxabc", 4));
-    //
-    //    assertEquals("match_bitap: Beyond end match.", 3, this.match_bitap("abcdef", "defyy", 4));
-    //
-    //    assertEquals("match_bitap: Oversized pattern.", 0, this.match_bitap("abcdef", "xabcdefy", 0));
-    //
-    //    this.Match_Threshold = 0.4f;
-    //    assertEquals("match_bitap: Threshold #1.", 4, this.match_bitap("abcdefghijk", "efxyhi", 1));
-    //
-    //    this.Match_Threshold = 0.3f;
-    //    assertEquals("match_bitap: Threshold #2.", -1, this.match_bitap("abcdefghijk", "efxyhi", 1));
-    //
-    //    this.Match_Threshold = 0.0f;
-    //    assertEquals("match_bitap: Threshold #3.", 1, this.match_bitap("abcdefghijk", "bcdef", 1));
-    //
-    //    this.Match_Threshold = 0.5f;
-    //    assertEquals("match_bitap: Multiple select #1.", 0, this.match_bitap("abcdexyzabcde", "abccde", 3));
-    //
-    //    assertEquals("match_bitap: Multiple select #2.", 8, this.match_bitap("abcdexyzabcde", "abccde", 5));
-    //
-    //    this.Match_Distance = 10;  // Strict location.
-    //    assertEquals("match_bitap: Distance test #1.", -1, this.match_bitap("abcdefghijklmnopqrstuvwxyz", "abcdefg", 24));
-    //
-    //    assertEquals("match_bitap: Distance test #2.", 0, this.match_bitap("abcdefghijklmnopqrstuvwxyz", "abcdxxefg", 1));
-    //
-    //    this.Match_Distance = 1000;  // Loose location.
-    //    assertEquals("match_bitap: Distance test #3.", 0, this.match_bitap("abcdefghijklmnopqrstuvwxyz", "abcdefg", 24));
-}
-
 /// Compute and return the score for a match with e errors and x location.
 /// @param e Number of errors in match.
 /// @param x Location of match.
@@ -4850,4 +4746,260 @@ test "matchAlphabet" {
     var bitap_map2 = try matchAlphabet(testing.allocator, "abcaba");
     defer bitap_map2.deinit();
     try testMapSubsetEquality(map, bitap_map2);
+}
+
+fn testMatchBitap(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    params: struct {
+        text: []const u8,
+        pattern: []const u8,
+        loc: usize,
+        expect: ?usize,
+    },
+) !void {
+    const best_loc = try dmp.matchBitap(
+        allocator,
+        params.text,
+        params.pattern,
+        params.loc,
+    );
+    try testing.expectEqual(params.expect, best_loc);
+}
+
+test matchBitap {
+    var dmp = DiffMatchPatch{};
+    dmp.match_distance = 500;
+    dmp.match_threshold = 0.5;
+    // Exact match #1.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "fgh",
+                .loc = 5,
+                .expect = 5,
+            },
+        },
+    );
+    // Exact match #2.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "fgh",
+                .loc = 0,
+                .expect = 5,
+            },
+        },
+    );
+    // Fuzzy match #1
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "efxhi",
+                .loc = 0,
+                .expect = 4,
+            },
+        },
+    );
+    // Fuzzy match #2.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "cdefxyhijk",
+                .loc = 5,
+                .expect = 2,
+            },
+        },
+    );
+    // Fuzzy match #3.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "bxy",
+                .loc = 1,
+                .expect = null,
+            },
+        },
+    );
+    // Overflow.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "123456789xx0",
+                .pattern = "3456789x0",
+                .loc = 2,
+                .expect = 2,
+            },
+        },
+    );
+    //Before start match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdef",
+                .pattern = "xxabc",
+                .loc = 4,
+                .expect = 0,
+            },
+        },
+    );
+    //
+    // Beyond end match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdef",
+                .pattern = "defyy",
+                .loc = 4,
+                .expect = 3,
+            },
+        },
+    );
+    //  Oversized pattern.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdef",
+                .pattern = "xabcdefy",
+                .loc = 0,
+                .expect = 0,
+            },
+        },
+    );
+    dmp.match_threshold = 0.4;
+    // Threshold #1.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "efxyhi",
+                .loc = 1,
+                .expect = 4,
+            },
+        },
+    );
+    dmp.match_threshold = 0.3;
+    //  Threshold #2.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "efxyhi",
+                .loc = 1,
+                .expect = null,
+            },
+        },
+    );
+    dmp.match_threshold = 0.0;
+    //  Threshold #3.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "bcdef",
+                .loc = 1,
+                .expect = 1,
+            },
+        },
+    );
+    dmp.match_threshold = 0.5;
+    //  Multiple select #1.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdexyzabcde",
+                .pattern = "abccde",
+                .loc = 5,
+                .expect = 8,
+            },
+        },
+    );
+    dmp.match_distance = 10; // Strict location.
+    //  Distance test #1.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijklmnopqrstuvwxyz",
+                .pattern = "abcdefg",
+                .loc = 1,
+                .expect = 0,
+            },
+        },
+    );
+    // Distance test #2.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijklmnopqrstuvwxyz",
+                .pattern = "abcdxxefg",
+                .loc = 1,
+                .expect = 0,
+            },
+        },
+    );
+    dmp.match_distance = 1000; // Loose location.
+    //  Distance test #3.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijklmnopqrstuvwxyz",
+                .pattern = "abcdefg",
+                .loc = 24,
+                .expect = 0,
+            },
+        },
+    );
 }
