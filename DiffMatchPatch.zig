@@ -27,7 +27,7 @@ diff_edit_cost: u16 = 4,
 /// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
 /// This defaults to 0.05, on the premise that the library will mostly be
 /// used in cases where failure is better than a bad patch application.
-match_threshold: f32 = 0.05,
+match_threshold: f64 = 0.05,
 
 /// How far to search for a match (0 = exact location, 1000+ = broad match).
 /// A match this many characters away from the expected location will add
@@ -2177,6 +2177,8 @@ fn ShiftSizeForType(T: type) type {
     };
 }
 
+const sh_one: u64 = 1;
+
 /// Locate the best instance of `pattern` in `text` near `loc` using the
 /// Bitap algorithm.  Returns -1 if no match found.
 ///
@@ -2200,7 +2202,7 @@ fn matchBitap(
     var map = try matchAlphabet(allocator, pattern);
     defer map.deinit();
     // Highest score beyond which we give up.
-    var threshold = dmp.threshold;
+    var threshold = dmp.match_threshold;
     // Is there a nearby exact match? (speedup)
     // TODO obviously if we want a speedup here, we do this:
     // if (threshold == 0.0) return best_loc;  #proof in comments
@@ -2208,17 +2210,17 @@ fn matchBitap(
     // #proof axiom: threshold is between 0.0 and 1.0 (doc comment)
     var best_loc = std.mem.indexOfPos(u8, text, loc, pattern);
     if (best_loc) |best| { // #proof this returns 0.0 for exact match (see comments in function)
-        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
     }
     // What about in the other direction? (speedup)
     const trunc_text = text[0..@min(loc + pattern.len, text.len)];
     best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
     if (best_loc) |best| { // #proof same here obviously
-        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
     }
     // Initialise the bit arrays.
     const shift: u6 = @intCast(pattern.len - 1);
-    const matchmask = 1 << shift;
+    const matchmask = sh_one << shift;
     best_loc = null;
     var bin_min: usize = undefined;
     var bin_mid: usize = undefined;
@@ -2234,7 +2236,7 @@ fn matchBitap(
         bin_mid = bin_max;
         while (bin_min < bin_mid) {
             // #proof lemma: if threshold == 0.0, this never happens
-            if (matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
+            if (dmp.matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
                 bin_min = bin_mid;
             } else {
                 bin_max = bin_mid;
@@ -2248,14 +2250,14 @@ fn matchBitap(
         // No errors below this point, so no errdefer either:
         var rd: []usize = try allocator.alloc(usize, finish + 2);
         const dshift: u6 = @intCast(d);
-        rd[finish + 1] = (1 << dshift) - 1;
+        rd[finish + 1] = (sh_one << dshift) - 1;
         var j = finish;
         while (j >= start) : (j -= 1) {
             const char_match: usize = if (text.len <= j - 1 or !map.contains(text[j - 1]))
                 // Out of range.
                 0
             else
-                map.get(text[j - 1]);
+                map.get(text[j - 1]).?;
             if (d == 0) {
                 // First pass: exact match.
                 rd[j] = ((rd[j + 1] << 1) | 1) & char_match;
@@ -2264,7 +2266,7 @@ fn matchBitap(
                 rd[j] = ((rd[j + 1] << 1) | 1) & char_match | (((last_rd[j + 1] | last_rd[j]) << 1) | 1) | last_rd[j + 1];
             }
             if ((rd[j] & matchmask) != 0) {
-                const score = matchBitapScore(d, j - 1, loc, pattern);
+                const score = dmp.matchBitapScore(d, j - 1, loc, pattern);
                 // This match will almost certainly be better than any existing
                 // match.  But check anyway.
                 // #proof: the smoking gun. This can only be equal not less.
@@ -2272,9 +2274,9 @@ fn matchBitap(
                     // Told you so.
                     threshold = score;
                     best_loc = j - 1;
-                    if (best_loc > loc) {
+                    if (best_loc.? > loc) {
                         // When passing loc, don't exceed our current distance from loc.
-                        start = @max(1, 2 * loc - best_loc);
+                        start = @max(1, 2 * loc - best_loc.?);
                     } else {
                         // Already passed loc, downhill from here on in.
                         break;
@@ -2283,7 +2285,7 @@ fn matchBitap(
             }
         } // #proof Anything else will do this.
         // #proof d + 1 starts at 1, so (see function) this will always break.
-        if (matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
+        if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
             // No hope for a (better) match at greater error levels.
             break;
         }
@@ -2294,31 +2296,77 @@ fn matchBitap(
     return best_loc;
 }
 
+fn testMatchBitap(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    params: struct {
+        text: []const u8,
+        pattern: []const u8,
+        loc: usize,
+        expect: ?usize,
+    },
+) !void {
+    const best_loc = try dmp.matchBitap(
+        allocator,
+        params.text,
+        params.pattern,
+        params.loc,
+    );
+    try testing.expectEqual(params.expect, best_loc);
+}
+
+test "matchBitap" {
+    var dmp = DiffMatchPatch{};
+    dmp.match_distance = 500;
+    dmp.match_threshold = 0.5;
+    //assertEquals("match_bitap: Exact match #1.", 5, this.match_bitap("abcdefghijk", "fgh", 5));
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "fgh",
+                .loc = 5,
+                .expect = 5,
+            },
+        },
+    );
+}
+
 /// Compute and return the score for a match with e errors and x location.
 /// @param e Number of errors in match.
 /// @param x Location of match.
 /// @param loc Expected location of match.
 /// @param pattern Pattern being sought.
 /// @return Overall score for match (0.0 = good, 1.0 = bad).
-fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
+fn matchBitapScore(
+    dmp: DiffMatchPatch,
+    e: usize,
+    x: usize,
+    loc: usize,
+    pattern: []const u8,
+) f64 {
     // shortcut? TODO, proof in comments
     // if (e == 0 and x == loc) return 0.0;
-    const e_float: f32 = @floatFromInt(e);
-    const len_float: f32 = @floatFromInt(pattern.len);
+    const e_float: f64 = @floatFromInt(e);
+    const len_float: f64 = @floatFromInt(pattern.len);
     // if e == 0, accuracy == 0: 0/x = 0
     const accuracy = e_float / len_float;
     // if loc == x, proximity == 0
     const proximity = if (loc >= x) loc - x else x - loc;
-    if (@This().match_distance == 0) {
+    if (dmp.match_distance == 0) {
         // Dodge divide by zero
         if (proximity == 0) // therefore this returns 0
             return accuracy
         else
             return 1.0;
     }
-    const float_match: f64 = @floatFromInt(@This().match_distance);
+    const float_match: f64 = @floatFromInt(dmp.match_distance);
+    const float_proximity: f64 = @floatFromInt(proximity);
     // or this is 0 + 0/f_m aka 0
-    return accuracy + (proximity / float_match);
+    return accuracy + (float_proximity / float_match);
 }
 
 /// Initialise the alphabet for the Bitap algorithm.
