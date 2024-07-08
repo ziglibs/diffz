@@ -2246,7 +2246,7 @@ fn matchBitap(
             } else {
                 bin_max = bin_mid;
             }
-            bin_mid = @divTrunc(bin_max - bin_min, 2 + bin_min);
+            bin_mid = @divTrunc(bin_max - bin_min, 2) + bin_min;
         }
         // Use the result from this iteration as the maximum for the next.
         bin_max = bin_mid;
@@ -2283,7 +2283,8 @@ fn matchBitap(
                     best_loc = j - 1;
                     if (best_loc.? > loc) {
                         // When passing loc, don't exceed our current distance from loc.
-                        start = @max(1, 2 * loc - best_loc.?);
+                        const i_best_loc: isize = @intCast(best_loc.?);
+                        start = @max(1, 2 * i_loc - i_best_loc);
                     } else {
                         // Already passed loc, downhill from here on in.
                         break;
@@ -2328,21 +2329,20 @@ test "matchBitap" {
     dmp.match_distance = 500;
     dmp.match_threshold = 0.5;
     // match_bitap: Exact match #1.
-    if (false) {
-        try testing.checkAllAllocationFailures(
-            testing.allocator,
-            testMatchBitap,
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
             .{
-                dmp,
-                .{
-                    .text = "abcdefghijk",
-                    .pattern = "fgh",
-                    .loc = 5,
-                    .expect = 5,
-                },
+                .text = "abcdefghijk",
+                .pattern = "fgh",
+                .loc = 5,
+                .expect = 5,
             },
-        );
-    }
+        },
+    );
+
     // match_bitap: Exact match #2.
     try testing.checkAllAllocationFailures(
         testing.allocator,
@@ -2357,11 +2357,22 @@ test "matchBitap" {
             },
         },
     );
-    //    assertEquals("match_bitap: Exact match #1.", 5, this.match_bitap("abcdefghijk", "fgh", 5));
-    //
-    //    assertEquals("match_bitap: Exact match #2.", 5, this.match_bitap("abcdefghijk", "fgh", 0));
-    //
-    //    assertEquals("match_bitap: Fuzzy match #1.", 4, this.match_bitap("abcdefghijk", "efxhi", 0));
+    // Fuzzy match #1
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMatchBitap,
+        .{
+            dmp,
+            .{
+                .text = "abcdefghijk",
+                .pattern = "efxhi",
+                .loc = 0,
+                .expect = 4,
+            },
+        },
+    );
+
+    //    assertEquals("match_bitap: .", 4, this.match_bitap("abcdefghijk", "efxhi", 0));
     //
     //    assertEquals("match_bitap: Fuzzy match #2.", 2, this.match_bitap("abcdefghijk", "cdefxyhijk", 5));
     //
