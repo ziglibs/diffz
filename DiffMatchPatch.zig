@@ -630,7 +630,6 @@ fn diffHalfMatchInternal(
         const prefix_after = try allocator.dupe(u8, best_short_text_a);
         errdefer allocator.free(prefix_after);
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
-        errdefer allocator.free(suffix_after);
         const best_common_text = try best_common.toOwnedSlice(allocator);
         errdefer allocator.free(best_common_text);
         return .{
@@ -1629,6 +1628,13 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     return 0;
 }
 
+inline fn boolInt(b: bool) usize {
+    if (b)
+        return 1
+    else
+        return 0;
+}
+
 /// Reduce the number of edits by eliminating operationally trivial
 /// equalities.  TODO this needs tests
 pub fn diffCleanupEfficiency(
@@ -1638,11 +1644,11 @@ pub fn diffCleanupEfficiency(
 ) DiffError!void {
     var changes = false;
     // Stack of indices where equalities are found.
-    var equalities = DiffList{};
-    defer deinitDiffList(allocator, equalities);
+    var equalities = std.ArrayList(usize).init(allocator);
+    defer equalities.deinit();
     // Always equal to equalities[equalitiesLength-1][1]
-    var last_equality = "";
-    var pointer: isize = 0; // Index of current position.
+    var last_equality: []const u8 = "";
+    var ipointer: isize = 0; // Index of current position.
     // Is there an insertion operation before the last equality.
     var pre_ins = false;
     // Is there a deletion operation before the last equality.
@@ -1651,11 +1657,12 @@ pub fn diffCleanupEfficiency(
     var post_ins = false;
     // Is there a deletion operation after the last equality.
     var post_del = false;
-    while (pointer < diffs.len) {
+    while (ipointer < diffs.items.len) {
+        const pointer: usize = @intCast(ipointer);
         if (diffs.items[pointer].operation == .equal) { // Equality found.
             if (diffs.items[pointer].text.len < dmp.diff_edit_cost and (post_ins or post_del)) {
                 // Candidate found.
-                equalities.Push(pointer);
+                try equalities.append(pointer);
                 pre_ins = post_ins;
                 pre_del = post_del;
                 last_equality = diffs.items[pointer].text;
@@ -1678,10 +1685,10 @@ pub fn diffCleanupEfficiency(
             // <ins>A</ins><del>B</del>X<ins>C</ins>
             // <ins>A</del>X<ins>C</ins><del>D</del>
             // <ins>A</ins><del>B</del>X<del>C</del>
-            if ((last_equality.Length != 0) and
+            if ((last_equality.len != 0) and
                 ((pre_ins and pre_del and post_ins and post_del) or
-                ((last_equality.Length < dmp.diff_edit_cost / 2) and
-                ((if (pre_ins) 1 else 0) + (if (pre_del) 1 else 0) + (if (post_ins) 1 else 0) + (if (post_del) 1 else 0)) == 3)))
+                ((last_equality.len < dmp.diff_edit_cost / 2) and
+                (boolInt(pre_ins) + boolInt(pre_del) + boolInt(post_ins) + boolInt(post_del) == 3))))
             {
                 // Duplicate record.
                 try diffs.ensureUnusedCapacity(allocator, 1);
@@ -1706,14 +1713,14 @@ pub fn diffCleanupEfficiency(
                         _ = equalities.pop();
                     }
 
-                    pointer = if (equalities.items.len > 0) equalities.items[equalities.items.len - 1] else -1;
+                    ipointer = if (equalities.items.len > 0) @intCast(equalities.items[equalities.items.len - 1]) else -1;
                     post_ins = false;
                     post_del = false;
                 }
                 changes = true;
             }
         }
-        pointer += 1;
+        ipointer += 1;
     }
 
     if (changes) {
@@ -4531,4 +4538,137 @@ test diffCleanupSemantic {
             .{ .operation = .insert, .text = "BC" },
         },
     }});
+}
+
+fn testDiffCleanupEfficiency(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    params: struct {
+        input: []const Diff,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try DiffList.initCapacity(allocator, params.input.len);
+    defer deinitDiffList(allocator, &diffs);
+    for (params.input) |item| {
+        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+    }
+    try dmp.diffCleanupEfficiency(allocator, &diffs);
+
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
+
+test "diffCleanupEfficiency" {
+    const allocator = testing.allocator;
+    var dmp = DiffMatchPatch{};
+    dmp.diff_edit_cost = 4;
+    { // Null case.
+        var diffs = DiffList{};
+        try dmp.diffCleanupEfficiency(allocator, &diffs);
+        try testing.expectEqualDeep(DiffList{}, diffs);
+    }
+    { // No elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "wxyz" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = dslice },
+            },
+        );
+    }
+    { // Four-edit elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "xyz" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "abxyzcd" },
+            .{ .operation = .insert, .text = "12xyz34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+    }
+    { // Three-edit elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "x" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "xcd" },
+            .{ .operation = .insert, .text = "12x34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+    }
+    { // Backpass elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "xy" },
+            .{ .operation = .insert, .text = "34" },
+            .{ .operation = .equal, .text = "z" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "56" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "abxyzcd" },
+            .{ .operation = .insert, .text = "12xy34z56" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+    }
+    { // High cost elimination.
+        dmp.diff_edit_cost = 5;
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "wxyz" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "abwxyzcd" },
+            .{ .operation = .insert, .text = "12wxyz34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+        dmp.diff_edit_cost = 4;
+    }
 }
