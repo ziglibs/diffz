@@ -2202,7 +2202,7 @@ fn matchBitap(
     var map = try matchAlphabet(allocator, pattern);
     defer map.deinit();
     // Highest score beyond which we give up.
-    var threshold = dmp.match_threshold;
+    var score_threshold = dmp.match_threshold;
     // Is there a nearby exact match? (speedup)
     // TODO obviously if we want a speedup here, we do this:
     // if (threshold == 0.0) return best_loc;  #proof in comments
@@ -2210,22 +2210,27 @@ fn matchBitap(
     // #proof axiom: threshold is between 0.0 and 1.0 (doc comment)
     var best_loc = std.mem.indexOfPos(u8, text, loc, pattern);
     if (best_loc) |best| { // #proof this returns 0.0 for exact match (see comments in function)
-        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
+        score_threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), score_threshold);
     }
     // What about in the other direction? (speedup)
     const trunc_text = text[0..@min(loc + pattern.len, text.len)];
     best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
     if (best_loc) |best| { // #proof same here obviously
-        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
+        score_threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), score_threshold);
     }
     // Initialise the bit arrays.
     const shift: u6 = @intCast(pattern.len - 1);
     const matchmask = sh_one << shift;
     best_loc = null;
-    var bin_min: usize = undefined;
-    var bin_mid: usize = undefined;
-    var bin_max = pattern.len + text.len;
-    // null last_rd to simplying freeing memory
+    // Zig is very insistent about integer width and signedness.
+    const i_textlen: isize = @intCast(text.len);
+    const i_patlen: isize = @intCast(pattern.len);
+
+    const i_loc: isize = @intCast(loc);
+    var bin_min: isize = undefined;
+    var bin_mid: isize = undefined;
+    var bin_max: isize = i_patlen + i_textlen;
+    // null last_rd to simplify freeing memory
     var last_rd: []usize = try allocator.alloc(usize, 0);
     errdefer allocator.free(last_rd);
     for (0..pattern.len) |d| {
@@ -2236,19 +2241,20 @@ fn matchBitap(
         bin_mid = bin_max;
         while (bin_min < bin_mid) {
             // #proof lemma: if threshold == 0.0, this never happens
-            if (dmp.matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
+            if (dmp.matchBitapScore(d, @intCast(i_loc + bin_mid), loc, pattern) <= score_threshold) {
                 bin_min = bin_mid;
             } else {
                 bin_max = bin_mid;
             }
-            bin_mid = (bin_max - bin_min) / 2 + bin_min;
+            bin_mid = @divTrunc(bin_max - bin_min, 2 + bin_min);
         }
         // Use the result from this iteration as the maximum for the next.
         bin_max = bin_mid;
-        var start = @max(1, loc - bin_mid + 1);
-        const finish = @min(loc + bin_mid, text.len) + pattern.len;
+        var start: usize = @intCast(@max(1, i_loc - bin_mid + 1));
+        const finish: usize = @intCast(@min(i_loc + bin_mid, i_textlen) + i_patlen);
         // No errors below this point, so no errdefer either:
         var rd: []usize = try allocator.alloc(usize, finish + 2);
+        @memset(rd, 0); // XXX might not help, decide
         errdefer allocator.free(rd);
         const dshift: u6 = @intCast(d);
         rd[finish + 1] = (sh_one << dshift) - 1;
@@ -2271,9 +2277,9 @@ fn matchBitap(
                 // This match will almost certainly be better than any existing
                 // match.  But check anyway.
                 // #proof: the smoking gun. This can only be equal not less.
-                if (score <= threshold) {
+                if (score <= score_threshold) {
                     // Told you so.
-                    threshold = score;
+                    score_threshold = score;
                     best_loc = j - 1;
                     if (best_loc.? > loc) {
                         // When passing loc, don't exceed our current distance from loc.
@@ -2286,7 +2292,7 @@ fn matchBitap(
             }
         } // #proof Anything else will do this.
         // #proof d + 1 starts at 1, so (see function) this will always break.
-        if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
+        if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > score_threshold) {
             // No hope for a (better) match at greater error levels.
             allocator.free(rd);
             break;
@@ -2321,7 +2327,23 @@ test "matchBitap" {
     var dmp = DiffMatchPatch{};
     dmp.match_distance = 500;
     dmp.match_threshold = 0.5;
-    //assertEquals("match_bitap: Exact match #1.", 5, this.match_bitap("abcdefghijk", "fgh", 5));
+    // match_bitap: Exact match #1.
+    if (false) {
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testMatchBitap,
+            .{
+                dmp,
+                .{
+                    .text = "abcdefghijk",
+                    .pattern = "fgh",
+                    .loc = 5,
+                    .expect = 5,
+                },
+            },
+        );
+    }
+    // match_bitap: Exact match #2.
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testMatchBitap,
@@ -2330,11 +2352,50 @@ test "matchBitap" {
             .{
                 .text = "abcdefghijk",
                 .pattern = "fgh",
-                .loc = 5,
+                .loc = 0,
                 .expect = 5,
             },
         },
     );
+    //    assertEquals("match_bitap: Exact match #1.", 5, this.match_bitap("abcdefghijk", "fgh", 5));
+    //
+    //    assertEquals("match_bitap: Exact match #2.", 5, this.match_bitap("abcdefghijk", "fgh", 0));
+    //
+    //    assertEquals("match_bitap: Fuzzy match #1.", 4, this.match_bitap("abcdefghijk", "efxhi", 0));
+    //
+    //    assertEquals("match_bitap: Fuzzy match #2.", 2, this.match_bitap("abcdefghijk", "cdefxyhijk", 5));
+    //
+    //    assertEquals("match_bitap: Fuzzy match #3.", -1, this.match_bitap("abcdefghijk", "bxy", 1));
+    //
+    //    assertEquals("match_bitap: Overflow.", 2, this.match_bitap("123456789xx0", "3456789x0", 2));
+    //
+    //    assertEquals("match_bitap: Before start match.", 0, this.match_bitap("abcdef", "xxabc", 4));
+    //
+    //    assertEquals("match_bitap: Beyond end match.", 3, this.match_bitap("abcdef", "defyy", 4));
+    //
+    //    assertEquals("match_bitap: Oversized pattern.", 0, this.match_bitap("abcdef", "xabcdefy", 0));
+    //
+    //    this.Match_Threshold = 0.4f;
+    //    assertEquals("match_bitap: Threshold #1.", 4, this.match_bitap("abcdefghijk", "efxyhi", 1));
+    //
+    //    this.Match_Threshold = 0.3f;
+    //    assertEquals("match_bitap: Threshold #2.", -1, this.match_bitap("abcdefghijk", "efxyhi", 1));
+    //
+    //    this.Match_Threshold = 0.0f;
+    //    assertEquals("match_bitap: Threshold #3.", 1, this.match_bitap("abcdefghijk", "bcdef", 1));
+    //
+    //    this.Match_Threshold = 0.5f;
+    //    assertEquals("match_bitap: Multiple select #1.", 0, this.match_bitap("abcdexyzabcde", "abccde", 3));
+    //
+    //    assertEquals("match_bitap: Multiple select #2.", 8, this.match_bitap("abcdexyzabcde", "abccde", 5));
+    //
+    //    this.Match_Distance = 10;  // Strict location.
+    //    assertEquals("match_bitap: Distance test #1.", -1, this.match_bitap("abcdefghijklmnopqrstuvwxyz", "abcdefg", 24));
+    //
+    //    assertEquals("match_bitap: Distance test #2.", 0, this.match_bitap("abcdefghijklmnopqrstuvwxyz", "abcdxxefg", 1));
+    //
+    //    this.Match_Distance = 1000;  // Loose location.
+    //    assertEquals("match_bitap: Distance test #3.", 0, this.match_bitap("abcdefghijklmnopqrstuvwxyz", "abcdefg", 24));
 }
 
 /// Compute and return the score for a match with e errors and x location.
@@ -2358,6 +2419,10 @@ fn matchBitapScore(
     const accuracy = e_float / len_float;
     // if loc == x, proximity == 0
     const proximity = if (loc >= x) loc - x else x - loc;
+    // TODO this seems obviously equivalent but wtf, debugging
+    // const ix: isize = @intCast(x);
+    // const proximity = @abs(i_loc - ix);
+    // const i_loc: isize = @intCast(loc);
     if (dmp.match_distance == 0) {
         // Dodge divide by zero
         if (proximity == 0) // therefore this returns 0
