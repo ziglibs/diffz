@@ -1802,25 +1802,22 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
 /// @param loc Location within text1.
 /// @return Location within text2.
 ///
-pub fn diffIndex(diffs: DiffList, loc: usize) usize {
-    //      int chars1 = 0;
-    //      int chars2 = 0;
-    //      int last_chars1 = 0;
-    //      int last_chars2 = 0;
-    var chars1: usize = 0;
-    var chars2: usize = 0;
-    var last_chars1: usize = 0;
-    var last_chars2: usize = 0;
+pub fn diffIndex(diffs: DiffList, u_loc: usize) usize {
+    var chars1: isize = 0;
+    var chars2: isize = 0;
+    var last_chars1: isize = 0;
+    var last_chars2: isize = 0;
+    const loc: isize = @intCast(u_loc);
     //  Dummy diff
     var last_diff: Diff = Diff{ .operation = .equal, .text = "" };
-    for (diffs) |a_diff| {
+    for (diffs.items) |a_diff| {
         if (a_diff.operation != .insert) {
             // Equality or deletion.
-            chars1 += a_diff.text.len;
+            chars1 += @intCast(a_diff.text.len);
         }
         if (a_diff.operation != .delete) {
             // Equality or insertion.
-            chars2 += a_diff.text.len;
+            chars2 += @intCast(a_diff.text.len);
         }
         if (chars1 > loc) {
             // Overshot the location.
@@ -1833,10 +1830,36 @@ pub fn diffIndex(diffs: DiffList, loc: usize) usize {
 
     if (last_diff.text.len != 0 and last_diff.operation == .delete) {
         // The location was deleted.
-        return last_chars2;
+        return @intCast(last_chars2);
     }
     // Add the remaining character length.
-    return last_chars2 + (loc - last_chars1);
+    return @intCast(last_chars2 + (loc - last_chars1));
+}
+
+test diffIndex {
+    const dmp = DiffMatchPatch{};
+    {
+        var diffs = try dmp.diff(
+            testing.allocator,
+            "The midnight train",
+            "The blue midnight train",
+            false,
+        );
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.expectEqual(0, diffIndex(diffs, 0));
+        try testing.expectEqual(9, diffIndex(diffs, 4));
+    }
+    {
+        var diffs = try dmp.diff(
+            testing.allocator,
+            "Better still to live and learn",
+            "Better yet to learn and live",
+            false,
+        );
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.expectEqual(11, diffIndex(diffs, 13));
+        try testing.expectEqual(20, diffIndex(diffs, 21));
+    }
 }
 
 /// A struct holding bookends for `diffPrittyFormat(diffs)`.
