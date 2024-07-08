@@ -2041,17 +2041,17 @@ pub fn matchMain(
     text: []const u8,
     pattern: []const u8,
     passed_loc: usize,
-) ?usize {
+) !?usize {
     // Clamp the loc to fit within text.
     const loc = @min(passed_loc, text.len);
     if (std.mem.eql(u8, text, pattern)) {
         // Shortcut (potentially not guaranteed by the algorithm)
         // TODO would be good to know what the above means...
         return 0;
-    } else if (text.len == 0 or pattern.len == 0) {
+    } else if (text.len == 0) {
         // Nothing to match.
         return null;
-    } else if (loc + pattern.len <= text.len and std.mem.eql(u8, text[loc..pattern.length], pattern)) {
+    } else if (loc + pattern.len <= text.len and std.mem.eql(u8, text[loc .. loc + pattern.len], pattern)) {
         // Perfect match at the perfect spot!  (Includes case of null pattern)
         return loc;
     } else {
@@ -2254,7 +2254,6 @@ fn matchBitap(
         const finish: usize = @intCast(@min(i_loc + bin_mid, i_textlen) + i_patlen);
         // No errors below this point, so no errdefer either:
         var rd: []usize = try allocator.alloc(usize, finish + 2);
-        @memset(rd, 0); // XXX might not help, decide
         errdefer allocator.free(rd);
         const dshift: u6 = @intCast(d);
         rd[finish + 1] = (sh_one << dshift) - 1;
@@ -2326,10 +2325,6 @@ fn matchBitapScore(
     const accuracy = e_float / len_float;
     // if loc == x, proximity == 0
     const proximity = if (loc >= x) loc - x else x - loc;
-    // TODO this seems obviously equivalent but wtf, debugging
-    // const ix: isize = @intCast(x);
-    // const proximity = @abs(i_loc - ix);
-    // const i_loc: isize = @intCast(loc);
     if (dmp.match_distance == 0) {
         // Dodge divide by zero
         if (proximity == 0) // therefore this returns 0
@@ -2390,7 +2385,7 @@ fn matchAlphabetImproved(allocator: Allocator, pattern: []const u8, UIntSize: ty
 ///
 /// @param patch The patch to grow.
 /// @param text Source text.
-fn patchAddContext( // XXX pick it up from here
+fn patchAddContext(
     dmp: DiffMatchPatch,
     allocator: Allocator,
     patch: *Patch,
@@ -5002,4 +4997,63 @@ test matchBitap {
             },
         },
     );
+}
+
+test matchMain {
+    var dmp = DiffMatchPatch{};
+    dmp.match_threshold = 0.5;
+    dmp.match_distance = 100;
+    const allocator = testing.allocator;
+    // Equality.
+    try testing.expectEqual(0, dmp.matchMain(
+        allocator,
+        "abcdefg",
+        "abcdefg",
+        1000,
+    ));
+    // Null text
+    try testing.expectEqual(null, dmp.matchMain(
+        allocator,
+        "",
+        "abcdefg",
+        1,
+    ));
+    // Null pattern.
+    try testing.expectEqual(3, dmp.matchMain(
+        allocator,
+        "abcdefg",
+        "",
+        3,
+    ));
+    // Exact match.
+    try testing.expectEqual(3, dmp.matchMain(
+        allocator,
+        "abcdefg",
+        "de",
+        3,
+    ));
+    // Beyond end match.
+    try testing.expectEqual(3, dmp.matchMain(
+        allocator,
+        "abcdef",
+        "defy",
+        4,
+    ));
+
+    // Oversized pattern.
+    try testing.expectEqual(0, dmp.matchMain(
+        allocator,
+        "abcdef",
+        "abcdefy",
+        0,
+    ));
+    dmp.match_threshold = 0.7;
+    // Complex match.
+    try testing.expectEqual(4, dmp.matchMain(
+        allocator,
+        "I am the very model of a modern major general.",
+        " that berry ",
+        5,
+    ));
+    dmp.match_threshold = 0.5;
 }
