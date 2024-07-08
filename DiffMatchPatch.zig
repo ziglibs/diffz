@@ -2082,7 +2082,7 @@ pub fn matchMain(
         // Shortcut (potentially not guaranteed by the algorithm)
         // TODO would be good to know what the above means...
         return 0;
-    } else if (text.len == 0) {
+    } else if (text.len == 0 or pattern.len == 0) {
         // Nothing to match.
         return null;
     } else if (loc + pattern.len <= text.len and std.mem.eql(u8, text[loc..pattern.length], pattern)) {
@@ -2228,6 +2228,7 @@ fn matchBitap(
     // TODO decide what to do here:
     // assert (Match_MaxBits == 0 || pattern.Length <= Match_MaxBits)
     //    : "Pattern too long for this application.";
+    assert(text.len != 0 and pattern.len != 0);
 
     // Initialise the alphabet.
     var map = try matchAlphabet(allocator, pattern);
@@ -2235,17 +2236,18 @@ fn matchBitap(
     // Highest score beyond which we give up.
     var threshold = dmp.threshold;
     // Is there a nearby exact match? (speedup)
-    var best_loc = std.mem.indexOfPos(u8, text, pattern);
-    if (best_loc) |best| {
-        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
-    }
     // TODO obviously if we want a speedup here, we do this:
-    // if (threshold == 0.0) return best_loc;
+    // if (threshold == 0.0) return best_loc;  #proof in comments
     // We don't have to unwrap best_loc because the retval is ?usize already
+    // #proof axiom: threshold is between 0.0 and 1.0 (doc comment)
+    var best_loc = std.mem.indexOfPos(u8, text, loc, pattern);
+    if (best_loc) |best| { // #proof this returns 0.0 for exact match (see comments in function)
+        threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
+    }
     // What about in the other direction? (speedup)
     const trunc_text = text[0..@min(loc + pattern.len, text.len)];
     best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
-    if (best_loc) |best| {
+    if (best_loc) |best| { // #proof same here obviously
         threshold = @min(matchBitapScore(0, best, loc, pattern), threshold);
     }
     // Initialise the bit arrays.
@@ -2265,6 +2267,7 @@ fn matchBitap(
         bin_min = 0;
         bin_mid = bin_max;
         while (bin_min < bin_mid) {
+            // #proof lemma: if threshold == 0.0, this never happens
             if (matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
                 bin_min = bin_mid;
             } else {
@@ -2277,7 +2280,7 @@ fn matchBitap(
         var start = @max(1, loc - bin_mid + 1);
         const finish = @min(loc + bin_mid, text.len) + pattern.len;
         // No errors below this point, so no errdefer either:
-        var rd = try allocator.alloc(usize, finish + 2);
+        var rd: []usize = try allocator.alloc(usize, finish + 2);
         const dshift: u6 = @intCast(d);
         rd[finish + 1] = (1 << dshift) - 1;
         var j = finish;
@@ -2298,6 +2301,7 @@ fn matchBitap(
                 const score = matchBitapScore(d, j - 1, loc, pattern);
                 // This match will almost certainly be better than any existing
                 // match.  But check anyway.
+                // #proof: the smoking gun. This can only be equal not less.
                 if (score <= threshold) {
                     // Told you so.
                     threshold = score;
@@ -2311,7 +2315,8 @@ fn matchBitap(
                     }
                 }
             }
-        }
+        } // #proof Anything else will do this.
+        // #proof d + 1 starts at 1, so (see function) this will always break.
         if (matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
             // No hope for a (better) match at greater error levels.
             break;
