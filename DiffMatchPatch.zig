@@ -476,7 +476,6 @@ fn diffHalfMatchInternal(
         const prefix_after = try allocator.dupe(u8, best_short_text_a);
         errdefer allocator.free(prefix_after);
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
-        errdefer allocator.free(suffix_after);
         const best_common_text = try best_common.toOwnedSlice(allocator);
         errdefer allocator.free(best_common_text);
         return .{
