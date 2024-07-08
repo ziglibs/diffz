@@ -2138,15 +2138,14 @@ test diffCleanupSemanticLossless {
     }});
 }
 
-/// TODO this function obviously leaks memory on error
 fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
     var text = [2]std.ArrayList(u8){
         std.ArrayList(u8).init(allocator),
         std.ArrayList(u8).init(allocator),
     };
     errdefer {
-        allocator.free(text[0]);
-        allocator.free(text[1]);
+        text[0].deinit();
+        text[1].deinit();
     }
 
     for (diffs.items) |myDiff| {
@@ -2161,6 +2160,65 @@ fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
         try text[0].toOwnedSlice(),
         try text[1].toOwnedSlice(),
     };
+}
+
+fn testRebuildTexts(allocator: Allocator, diffs: DiffList, params: struct {
+    before: []const u8,
+    after: []const u8,
+}) !void {
+    const texts = try rebuildtexts(allocator, diffs);
+    defer {
+        allocator.free(texts[0]);
+        allocator.free(texts[1]);
+    }
+    try testing.expectEqualStrings(params.before, texts[0]);
+    try testing.expectEqualStrings(params.after, texts[1]);
+}
+
+test rebuildtexts {
+    {
+        var diffs = try sliceToDiffList(testing.allocator, &.{
+            .{ .operation = .insert, .text = "abcabc" },
+            .{ .operation = .equal, .text = "defdef" },
+            .{ .operation = .delete, .text = "ghighi" },
+        });
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.checkAllAllocationFailures(testing.allocator, testRebuildTexts, .{
+            diffs,
+            .{
+                .before = "defdefghighi",
+                .after = "abcabcdefdef",
+            },
+        });
+    }
+    {
+        var diffs = try sliceToDiffList(testing.allocator, &.{
+            .{ .operation = .insert, .text = "xxx" },
+            .{ .operation = .delete, .text = "yyy" },
+        });
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.checkAllAllocationFailures(testing.allocator, testRebuildTexts, .{
+            diffs,
+            .{
+                .before = "yyy",
+                .after = "xxx",
+            },
+        });
+    }
+    {
+        var diffs = try sliceToDiffList(testing.allocator, &.{
+            .{ .operation = .equal, .text = "xyz" },
+            .{ .operation = .equal, .text = "pdq" },
+        });
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.checkAllAllocationFailures(testing.allocator, testRebuildTexts, .{
+            diffs,
+            .{
+                .before = "xyzpdq",
+                .after = "xyzpdq",
+            },
+        });
+    }
 }
 
 fn testDiffBisect(
