@@ -1843,39 +1843,13 @@ pub fn diffIndex(diffs: DiffList, u_loc: usize) usize {
     return @intCast(last_chars2 + (loc - last_chars1));
 }
 
-test diffIndex {
-    const dmp = DiffMatchPatch{};
-    {
-        var diffs = try dmp.diff(
-            testing.allocator,
-            "The midnight train",
-            "The blue midnight train",
-            false,
-        );
-        defer deinitDiffList(testing.allocator, &diffs);
-        try testing.expectEqual(0, diffIndex(diffs, 0));
-        try testing.expectEqual(9, diffIndex(diffs, 4));
-    }
-    {
-        var diffs = try dmp.diff(
-            testing.allocator,
-            "Better still to live and learn",
-            "Better yet to learn and live",
-            false,
-        );
-        defer deinitDiffList(testing.allocator, &diffs);
-        try testing.expectEqual(11, diffIndex(diffs, 13));
-        try testing.expectEqual(20, diffIndex(diffs, 21));
-    }
-}
-
 /// A struct holding bookends for `diffPrittyFormat(diffs)`.
 ///
-/// May include a function taking an allocator and the diff,
-/// which shall return the text of the diff, appropriately munged.
-/// Note that if the function is provided, all text returned will
-/// be freed, so it should always return a copy whether or not
-/// edits are needed.
+/// May include a function taking an allocator and the Diff,
+/// which shall return the text of the Diff, appropriately munged.
+/// This allows for tasks like proper HTML escaping.  Note that if
+/// the function is provided, all text returned will be freed, so
+/// it should always return a copy whether or not edits are needed.
 pub const DiffDecorations = struct {
     delete_start: []const u8 = "",
     delete_end: []const u8 = "",
@@ -1906,7 +1880,7 @@ pub fn diffPrettyFormat(
     defer out.deinit();
     const writer = out.writer();
     _ = try writeDiffPrettyFormat(allocator, writer, diffs, deco);
-    return out.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 /// Pretty-print a diff for output to a terminal.
@@ -1924,7 +1898,7 @@ pub fn writeDiffPrettyFormat(
     deco: DiffDecorations,
 ) !usize {
     var written: usize = 0;
-    for (diffs) |d| {
+    for (diffs.items) |d| {
         const text = if (deco.pre_process) |lambda|
             try lambda(allocator, d)
         else
@@ -1945,7 +1919,7 @@ pub fn writeDiffPrettyFormat(
                 written += try writer.write(text);
                 written += try writer.write(deco.insert_end);
             },
-            .equals => {
+            .equal => {
                 written += try writer.write(deco.equals_start);
                 written += try writer.write(text);
                 written += try writer.write(deco.equals_end);
@@ -4671,4 +4645,57 @@ test "diffCleanupEfficiency" {
         );
         dmp.diff_edit_cost = 4;
     }
+}
+
+test diffIndex {
+    const dmp = DiffMatchPatch{};
+    {
+        var diffs = try dmp.diff(
+            testing.allocator,
+            "The midnight train",
+            "The blue midnight train",
+            false,
+        );
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.expectEqual(0, diffIndex(diffs, 0));
+        try testing.expectEqual(9, diffIndex(diffs, 4));
+    }
+    {
+        var diffs = try dmp.diff(
+            testing.allocator,
+            "Better still to live and learn",
+            "Better yet to learn and live",
+            false,
+        );
+        defer deinitDiffList(testing.allocator, &diffs);
+        try testing.expectEqual(11, diffIndex(diffs, 13));
+        try testing.expectEqual(20, diffIndex(diffs, 21));
+    }
+}
+
+test "diffPrettyFormat" {
+    const test_deco = DiffDecorations{
+        .delete_start = "<+>",
+        .delete_end = "</+>",
+        .insert_start = "<->",
+        .insert_end = "</->",
+        .equals_start = "<=>",
+        .equals_end = "</=>",
+    };
+    const dmp = DiffMatchPatch{};
+    const allocator = std.testing.allocator;
+    var diffs = try dmp.diff(
+        allocator,
+        "A thing of beauty is a joy forever",
+        "Singular beauty is enjoyed forever",
+        false,
+    );
+    defer deinitDiffList(allocator, &diffs);
+    try diffCleanupSemantic(allocator, &diffs);
+    const out_text = try diffPrettyFormat(allocator, diffs, test_deco);
+    defer allocator.free(out_text);
+    try testing.expectEqualStrings(
+        "<+>A thing of</+><->Singular</-><=> beauty is </=><+>a </+><->en</-><=>joy</=><->ed</-><=> forever</=>",
+        out_text,
+    );
 }
