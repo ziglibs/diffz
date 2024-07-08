@@ -1961,21 +1961,6 @@ pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
     return chars.toOwnedSlice(allocator);
 }
 
-test "diff before and after text" {
-    const dmp = DiffMatchPatch{};
-    const allocator = testing.allocator;
-    const before = "The cat in the hat.";
-    const after = "The bat in the belfry.";
-    var diffs = try dmp.diff(allocator, before, after, false);
-    defer deinitDiffList(allocator, &diffs);
-    const before1 = try diffBeforeText(allocator, diffs);
-    defer allocator.free(before1);
-    const after1 = try diffAfterText(allocator, diffs);
-    defer allocator.free(after1);
-    try testing.expectEqualStrings(before, before1);
-    try testing.expectEqualStrings(after, after1);
-}
-
 ///
 /// Compute the Levenshtein distance; the number of inserted,
 /// deleted or substituted characters.
@@ -4645,6 +4630,21 @@ test "diffCleanupEfficiency" {
         );
         dmp.diff_edit_cost = 4;
     }
+}
+
+test "diff before and after text" {
+    const dmp = DiffMatchPatch{};
+    const allocator = testing.allocator;
+    const before = "The cat in the hat.";
+    const after = "The bat in the belfry.";
+    var diffs = try dmp.diff(allocator, before, after, false);
+    defer deinitDiffList(allocator, &diffs);
+    const before1 = try diffBeforeText(allocator, diffs);
+    defer allocator.free(before1);
+    const after1 = try diffAfterText(allocator, diffs);
+    defer allocator.free(after1);
+    try testing.expectEqualStrings(before, before1);
+    try testing.expectEqualStrings(after, after1);
 }
 
 test diffIndex {
