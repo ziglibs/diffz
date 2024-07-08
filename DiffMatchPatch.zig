@@ -2735,12 +2735,12 @@ test diffCleanupSemantic {
     }});
 }
 
-fn testDiffCleanupEfficienct(
+fn testDiffCleanupEfficiency(
     allocator: Allocator,
     dmp: DiffMatchPatch,
     params: struct {
-        input: []Diff,
-        expected: []Diff,
+        input: []const Diff,
+        expected: []const Diff,
     },
 ) !void {
     var diffs = try DiffList.initCapacity(allocator, params.input.len);
@@ -2757,10 +2757,113 @@ test "diffCleanupEfficiency" {
     const allocator = testing.allocator;
     var dmp = DiffMatchPatch{};
     dmp.diff_edit_cost = 4;
-    {
-        // Null case
+    { // Null case.
         var diffs = DiffList{};
         try dmp.diffCleanupEfficiency(allocator, &diffs);
         try testing.expectEqualDeep(DiffList{}, diffs);
+    }
+    { // No elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "wxyz" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = dslice },
+            },
+        );
+    }
+    { // Four-edit elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "xyz" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "abxyzcd" },
+            .{ .operation = .insert, .text = "12xyz34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+    }
+    { // Three-edit elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "x" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "xcd" },
+            .{ .operation = .insert, .text = "12x34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+    }
+    { // Backpass elimination.
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "xy" },
+            .{ .operation = .insert, .text = "34" },
+            .{ .operation = .equal, .text = "z" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "56" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "abxyzcd" },
+            .{ .operation = .insert, .text = "12xy34z56" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+    }
+    { // High cost elimination.
+        dmp.diff_edit_cost = 5;
+        const dslice: []const Diff = &.{
+            .{ .operation = .delete, .text = "ab" },
+            .{ .operation = .insert, .text = "12" },
+            .{ .operation = .equal, .text = "wxyz" },
+            .{ .operation = .delete, .text = "cd" },
+            .{ .operation = .insert, .text = "34" },
+        };
+        const d_after: []const Diff = &.{
+            .{ .operation = .delete, .text = "abwxyzcd" },
+            .{ .operation = .insert, .text = "12wxyz34" },
+        };
+        try testing.checkAllAllocationFailures(
+            testing.allocator,
+            testDiffCleanupEfficiency,
+            .{
+                dmp,
+                .{ .input = dslice, .expected = d_after },
+            },
+        );
+        dmp.diff_edit_cost = 4;
     }
 }
