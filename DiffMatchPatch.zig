@@ -2249,6 +2249,7 @@ fn matchBitap(
         const finish = @min(loc + bin_mid, text.len) + pattern.len;
         // No errors below this point, so no errdefer either:
         var rd: []usize = try allocator.alloc(usize, finish + 2);
+        errdefer allocator.free(rd);
         const dshift: u6 = @intCast(d);
         rd[finish + 1] = (sh_one << dshift) - 1;
         var j = finish;
@@ -2287,6 +2288,7 @@ fn matchBitap(
         // #proof d + 1 starts at 1, so (see function) this will always break.
         if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
             // No hope for a (better) match at greater error levels.
+            allocator.free(rd);
             break;
         }
         allocator.free(last_rd);
