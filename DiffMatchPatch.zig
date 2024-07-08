@@ -2324,8 +2324,8 @@ fn matchBitapScore(e: usize, x: usize, loc: usize, pattern: []const u8) f64 {
 /// Initialise the alphabet for the Bitap algorithm.
 /// @param pattern The text to encode.
 /// @return Hash of character locations.
-fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usize) {
-    var map = std.HashMap(u8, usize).init(allocator);
+fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.AutoHashMap(u8, usize) {
+    var map = std.AutoHashMap(u8, usize).init(allocator);
     errdefer map.deinit();
     for (pattern) |c| {
         if (!map.contains(c)) {
@@ -2334,7 +2334,7 @@ fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.HashMap(u8, usi
     }
     for (pattern, 0..) |c, i| {
         const shift: u6 = @intCast(pattern.len - i - 1);
-        const value: usize = map.get(c) | (1 << shift);
+        const value: usize = map.get(c).? | (@as(usize, 1) << shift);
         try map.put(c, value);
     }
     return map;
@@ -4698,4 +4698,30 @@ test "diffPrettyFormat" {
         "<+>A thing of</+><->Singular</-><=> beauty is </=><+>a </+><->en</-><=>joy</=><->ed</-><=> forever</=>",
         out_text,
     );
+}
+
+fn testMapSubsetEquality(left: anytype, right: anytype) !void {
+    var map_iter = left.iterator();
+    while (map_iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        try testing.expectEqual(value, right.get(key));
+    }
+}
+test "matchAlphabet" {
+    var map = std.AutoHashMap(u8, usize).init(testing.allocator);
+    defer map.deinit();
+    try map.put('a', 4);
+    try map.put('b', 2);
+    try map.put('c', 1);
+    var bitap_map = try matchAlphabet(testing.allocator, "abc");
+    defer bitap_map.deinit();
+    try testMapSubsetEquality(map, bitap_map);
+    map.clearRetainingCapacity();
+    try map.put('a', 37);
+    try map.put('b', 18);
+    try map.put('c', 8);
+    var bitap_map2 = try matchAlphabet(testing.allocator, "abcaba");
+    defer bitap_map2.deinit();
+    try testMapSubsetEquality(map, bitap_map2);
 }
