@@ -2006,13 +2006,13 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
     var inserts: usize = 0;
     var deletes: usize = 0;
     var levenshtein: usize = 0;
-    for (diffs.items) |d| {
-        switch (d.operation) {
+    for (diffs.items) |a_diff| {
+        switch (a_diff.operation) {
             .insert => {
-                inserts += d.text.len;
+                inserts += a_diff.text.len;
             },
             .delete => {
-                deletes += d.text.len;
+                deletes += a_diff.text.len;
             },
             .equal => {
                 // A deletion and an insertion is one substitution.
@@ -2024,6 +2024,41 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
     }
 
     return levenshtein + @max(inserts, deletes);
+}
+
+test diffLevenshtein {
+    const allocator = testing.allocator;
+    // These diffs don't get text freed
+    {
+        var diffs = DiffList{};
+        defer diffs.deinit(allocator);
+        try diffs.appendSlice(allocator, &.{
+            Diff.init(.delete, "abc"),
+            Diff.init(.insert, "1234"),
+            Diff.init(.equal, "xyz"),
+        });
+        try testing.expectEqual(4, diffLevenshtein(diffs));
+    }
+    {
+        var diffs = DiffList{};
+        defer diffs.deinit(allocator);
+        try diffs.appendSlice(allocator, &.{
+            Diff.init(.equal, "xyz"),
+            Diff.init(.delete, "abc"),
+            Diff.init(.insert, "1234"),
+        });
+        try testing.expectEqual(4, diffLevenshtein(diffs));
+    }
+    {
+        var diffs = DiffList{};
+        defer diffs.deinit(allocator);
+        try diffs.appendSlice(allocator, &.{
+            Diff.init(.delete, "abc"),
+            Diff.init(.equal, "xyz"),
+            Diff.init(.insert, "1234"),
+        });
+        try testing.expectEqual(7, diffLevenshtein(diffs));
+    }
 }
 
 //| MATCH FUNCTIONS
