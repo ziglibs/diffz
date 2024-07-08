@@ -1009,14 +1009,14 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     diffs.items[pointer].text[0 .. diffs.items[pointer].text.len -
                         diffs.items[pointer - 1].text.len],
                 });
-                defer allocator.free(old_pt);
+                allocator.free(old_pt);
                 diffs.items[pointer].text = pt;
                 const old_pt1t = diffs.items[pointer + 1].text;
                 const p1t = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
-                defer allocator.free(old_pt1t);
+                allocator.free(old_pt1t);
                 diffs.items[pointer + 1].text = p1t;
                 freeRangeDiffList(allocator, diffs, pointer - 1, 1);
                 try diffs.replaceRange(allocator, pointer - 1, 1, &.{});
@@ -1027,14 +1027,14 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     diffs.items[pointer - 1].text,
                     diffs.items[pointer + 1].text,
                 });
-                defer allocator.free(old_ptm1);
+                allocator.free(old_ptm1);
                 diffs.items[pointer - 1].text = pm1t;
                 const old_pt = diffs.items[pointer].text;
-                defer allocator.free(old_pt);
                 const pt = try std.mem.concat(allocator, u8, &.{
                     diffs.items[pointer].text[diffs.items[pointer + 1].text.len..],
                     diffs.items[pointer + 1].text,
                 });
+                allocator.free(old_pt);
                 diffs.items[pointer].text = pt;
                 freeRangeDiffList(allocator, diffs, pointer + 1, 1);
                 try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
@@ -1141,8 +1141,6 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 {
                     // Overlap found.
                     // Insert an equality and trim the surrounding edits.
-                    defer allocator.free(deletion);
-                    defer allocator.free(insertion);
                     try diffs.ensureUnusedCapacity(allocator, 1);
                     diffs.insertAssumeCapacity(
                         @intCast(pointer),
@@ -1153,8 +1151,10 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     );
                     diffs.items[@intCast(pointer - 1)].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
+                    allocator.free(deletion);
                     diffs.items[@intCast(pointer + 1)].text =
                         try allocator.dupe(u8, insertion[overlap_length1..]);
+                    allocator.free(insertion);
                     pointer += 1;
                 }
             } else {
@@ -1163,8 +1163,6 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 {
                     // Reverse overlap found.
                     // Insert an equality and swap and trim the surrounding edits.
-                    defer allocator.free(deletion);
-                    defer allocator.free(insertion);
                     try diffs.ensureUnusedCapacity(allocator, 1);
                     diffs.insertAssumeCapacity(
                         @intCast(pointer),
@@ -1173,11 +1171,14 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                             try allocator.dupe(u8, deletion[0..overlap_length2]),
                         ),
                     );
-                    diffs.items[@intCast(pointer - 1)].operation = .insert;
                     const new_minus = try allocator.dupe(u8, insertion[0 .. insertion.len - overlap_length2]);
+                    errdefer allocator.free(new_minus); // necessary due to swap
+                    const new_plus = try allocator.dupe(u8, deletion[overlap_length2..]);
+                    allocator.free(deletion);
+                    allocator.free(insertion);
+                    diffs.items[@intCast(pointer - 1)].operation = .insert;
                     diffs.items[@intCast(pointer - 1)].text = new_minus;
                     diffs.items[@intCast(pointer + 1)].operation = .delete;
-                    const new_plus = try allocator.dupe(u8, deletion[overlap_length2..]);
                     diffs.items[@intCast(pointer + 1)].text = new_plus;
                     pointer += 1;
                 }
@@ -1290,7 +1291,7 @@ pub fn diffCleanupSemanticLossless(
                 }
                 const old_text1 = diffs.items[pointer].text;
                 diffs.items[pointer].text = try allocator.dupe(u8, best_edit.items);
-                allocator.free(old_text1);
+                defer allocator.free(old_text1);
                 if (best_equality_2.items.len != 0) {
                     const old_text2 = diffs.items[pointer + 1].text;
                     diffs.items[pointer + 1].text = try allocator.dupe(u8, best_equality_2.items);
@@ -1935,19 +1936,17 @@ test diffCleanupMerge {
     }});
 
     // Slide edit right
-    if (false) { // TODO #23 This test needs to dupe its data
-        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
-            .input = &.{
-                .{ .operation = .equal, .text = "c" },
-                .{ .operation = .insert, .text = "ab" },
-                .{ .operation = .equal, .text = "a" },
-            },
-            .expected = &.{
-                .{ .operation = .equal, .text = "ca" },
-                .{ .operation = .insert, .text = "ba" },
-            },
-        }});
-    }
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "c" },
+            .{ .operation = .insert, .text = "ab" },
+            .{ .operation = .equal, .text = "a" },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "ca" },
+            .{ .operation = .insert, .text = "ba" },
+        },
+    }});
 
     // Slide edit left recursive
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
@@ -1964,22 +1963,20 @@ test diffCleanupMerge {
         },
     }});
 
-    if (false) { // TODO #23 This test needs to dupe its data
-        // Slide edit right recursive
-        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
-            .input = &.{
-                .{ .operation = .equal, .text = "x" },
-                .{ .operation = .delete, .text = "ca" },
-                .{ .operation = .equal, .text = "c" },
-                .{ .operation = .delete, .text = "b" },
-                .{ .operation = .equal, .text = "a" },
-            },
-            .expected = &.{
-                .{ .operation = .equal, .text = "xca" },
-                .{ .operation = .delete, .text = "cba" },
-            },
-        }});
-    }
+    // Slide edit right recursive
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
+        .input = &.{
+            .{ .operation = .equal, .text = "x" },
+            .{ .operation = .delete, .text = "ca" },
+            .{ .operation = .equal, .text = "c" },
+            .{ .operation = .delete, .text = "b" },
+            .{ .operation = .equal, .text = "a" },
+        },
+        .expected = &.{
+            .{ .operation = .equal, .text = "xca" },
+            .{ .operation = .delete, .text = "cba" },
+        },
+    }});
 
     // Empty merge
     try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupMerge, .{.{
@@ -2683,51 +2680,49 @@ test diffCleanupSemantic {
         },
     }});
 
-    if (false) { // TODO #23 This test needs to dupe its data
-        // Overlap elimination
-        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
-            .input = &.{
-                .{ .operation = .delete, .text = "abcxxx" },
-                .{ .operation = .insert, .text = "xxxdef" },
-            },
-            .expected = &.{
-                .{ .operation = .delete, .text = "abc" },
-                .{ .operation = .equal, .text = "xxx" },
-                .{ .operation = .insert, .text = "def" },
-            },
-        }});
+    // Overlap elimination
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "abcxxx" },
+            .{ .operation = .insert, .text = "xxxdef" },
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "abc" },
+            .{ .operation = .equal, .text = "xxx" },
+            .{ .operation = .insert, .text = "def" },
+        },
+    }});
 
-        // Reverse overlap elimination
-        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
-            .input = &.{
-                .{ .operation = .delete, .text = "xxxabc" },
-                .{ .operation = .insert, .text = "defxxx" },
-            },
-            .expected = &.{
-                .{ .operation = .insert, .text = "def" },
-                .{ .operation = .equal, .text = "xxx" },
-                .{ .operation = .delete, .text = "abc" },
-            },
-        }});
+    // Reverse overlap elimination
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "xxxabc" },
+            .{ .operation = .insert, .text = "defxxx" },
+        },
+        .expected = &.{
+            .{ .operation = .insert, .text = "def" },
+            .{ .operation = .equal, .text = "xxx" },
+            .{ .operation = .delete, .text = "abc" },
+        },
+    }});
 
-        // Two overlap eliminations
-        try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
-            .input = &.{
-                .{ .operation = .delete, .text = "abcd1212" },
-                .{ .operation = .insert, .text = "1212efghi" },
-                .{ .operation = .equal, .text = "----" },
-                .{ .operation = .delete, .text = "A3" },
-                .{ .operation = .insert, .text = "3BC" },
-            },
-            .expected = &.{
-                .{ .operation = .delete, .text = "abcd" },
-                .{ .operation = .equal, .text = "1212" },
-                .{ .operation = .insert, .text = "efghi" },
-                .{ .operation = .equal, .text = "----" },
-                .{ .operation = .delete, .text = "A" },
-                .{ .operation = .equal, .text = "3" },
-                .{ .operation = .insert, .text = "BC" },
-            },
-        }});
-    }
+    // Two overlap eliminations
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffCleanupSemantic, .{.{
+        .input = &.{
+            .{ .operation = .delete, .text = "abcd1212" },
+            .{ .operation = .insert, .text = "1212efghi" },
+            .{ .operation = .equal, .text = "----" },
+            .{ .operation = .delete, .text = "A3" },
+            .{ .operation = .insert, .text = "3BC" },
+        },
+        .expected = &.{
+            .{ .operation = .delete, .text = "abcd" },
+            .{ .operation = .equal, .text = "1212" },
+            .{ .operation = .insert, .text = "efghi" },
+            .{ .operation = .equal, .text = "----" },
+            .{ .operation = .delete, .text = "A" },
+            .{ .operation = .equal, .text = "3" },
+            .{ .operation = .insert, .text = "BC" },
+        },
+    }});
 }
