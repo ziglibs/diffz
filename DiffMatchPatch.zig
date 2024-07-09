@@ -2403,7 +2403,7 @@ fn patchAddContext(
         while (std.mem.indexOf(u8, text, pattern) != std.mem.lastIndexOf(u8, text, pattern) and pattern.len < max_width) {
             padding += dmp.patch_margin;
             const pat_start = if (padding > patch.start2) 0 else patch.start2 - padding;
-            const pat_end = pat_start + @min(text.len, patch.start2 + patch.length1 + padding);
+            const pat_end = @min(text.len, patch.start2 + patch.length1 + padding);
             pattern = text[pat_start..pat_end];
         }
     }
@@ -2429,8 +2429,6 @@ fn patchAddContext(
     // Add the suffix.
     const suffix = post: {
         const post_start = patch.start2 + patch.length1;
-        // In case we messed up somewhere:
-        assert(!is_follow(text[post_start]));
         var post_end = @min(text.len, patch.start2 + patch.length1 + padding);
         // Prevent broken codepoints here as well: Lead bytes, or follow with another follow
         while (post_end + 1 < text.len and !std.ascii.isASCII(text[post_end]) and is_follow(text[post_end + 1])) {
@@ -2657,7 +2655,7 @@ pub fn makePatch(
 pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: DiffList) !PatchList {
     const text1 = try diffBeforeText(allocator, diffs);
     defer allocator.free(text1);
-    return try dmp.makePatch(allocator, text1, diffs, .copy);
+    return try dmp.makePatch(allocator, text1, diffs);
 }
 
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
@@ -5299,6 +5297,40 @@ fn testMakePatch(allocator: Allocator) !void {
         const patch_text_2 = try patchToText(allocator, patches);
         defer allocator.free(patch_text_2);
         try testing.expectEqualStrings(expectedPatch, patch_text_2);
+    }
+    const expectedPatch2 = "@@ -1,21 +1,21 @@\n-%601234567890-=%5B%5D%5C;',./\n+~!@#$%25%5E&*()_+%7B%7D%7C:%22%3C%3E?\n";
+    {
+        var patches = try dmp.diffAndMakePatch(
+            allocator,
+            "`1234567890-=[]\\;',./",
+            "~!@#$%^&*()_+{}|:\"<>?",
+        );
+        defer deinitPatchList(allocator, &patches);
+        const patch_text = try patchToText(allocator, patches);
+        defer allocator.free(patch_text);
+        try testing.expectEqualStrings(expectedPatch2, patch_text);
+    }
+    {
+        var diffs = try sliceToDiffList(allocator, &.{
+            .{ .operation = .delete, .text = "`1234567890-=[]\\;',./" },
+            .{ .operation = .insert, .text = "~!@#$%^&*()_+{}|:\"<>?" },
+        });
+        defer deinitDiffList(allocator, &diffs);
+        var patches = try dmp.makePatchFromDiffs(allocator, diffs);
+        defer deinitPatchList(allocator, &patches);
+        for (patches.items[0].diffs.items, 0..) |a_diff, idx| {
+            try testing.expect(a_diff.eql(diffs.items[idx]));
+        }
+    }
+    {
+        const text1a = "abcdef" ** 100;
+        const text2a = text1a ++ "123";
+        const expected_patch = "@@ -573,28 +573,31 @@\n cdefabcdefabcdefabcdefabcdef\n+123\n";
+        var patches = try dmp.diffAndMakePatch(allocator, text1a, text2a);
+        defer deinitPatchList(allocator, &patches);
+        const patch_text = try patchToText(allocator, patches);
+        defer allocator.free(patch_text);
+        try testing.expectEqualStrings(expected_patch, patch_text);
     }
 }
 
