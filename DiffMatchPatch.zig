@@ -2651,7 +2651,7 @@ pub fn makePatch(
     text: []const u8,
     diffs: DiffList,
 ) !PatchList {
-    try dmp.makePatchInternal(allocator, text, diffs, .copy);
+    return try dmp.makePatchInternal(allocator, text, diffs, .copy);
 }
 
 pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: DiffList) !PatchList {
@@ -5277,14 +5277,28 @@ fn testMakePatch(allocator: Allocator) !void {
     try testing.expectEqualStrings("", null_patch_text);
     const text1 = "The quick brown fox jumps over the lazy dog.";
     const text2 = "That quick brown fox jumped over a lazy dog.";
-    const expectedPatch = "@@ -1,8 +1,7 @@\n Th\n-at\n+e\n  qui\n@@ -21,17 +21,18 @@\n jump\n-ed\n+s\n  over \n-a\n+the\n  laz\n";
-    // The second patch must be "-21,17 +21,18", not "-22,17 +21,18" due to rolling context.
-    {
+    { // The second patch must be "-21,17 +21,18", not "-22,17 +21,18" due to rolling context.
+        const expectedPatch = "@@ -1,8 +1,7 @@\n Th\n-at\n+e\n  qui\n@@ -21,17 +21,18 @@\n jump\n-ed\n+s\n  over \n-a\n+the\n  laz\n";
         var patches = try dmp.makePatchFromTexts(allocator, text2, text1);
         defer deinitPatchList(allocator, &patches);
         const patch_text = try patchToText(allocator, patches);
         defer allocator.free(patch_text);
         try testing.expectEqualStrings(expectedPatch, patch_text);
+    }
+    {
+        const expectedPatch = "@@ -1,11 +1,12 @@\n Th\n-e\n+at\n  quick b\n@@ -22,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n  laz\n";
+        var patches = try dmp.makePatchFromTexts(allocator, text1, text2);
+        defer deinitPatchList(allocator, &patches);
+        const patch_text = try patchToText(allocator, patches);
+        defer allocator.free(patch_text);
+        try testing.expectEqualStrings(expectedPatch, patch_text);
+        var diffs = try dmp.diff(allocator, text1, text2, false);
+        defer deinitDiffList(allocator, &diffs);
+        var patches2 = try dmp.makePatch(allocator, text1, diffs);
+        defer deinitPatchList(allocator, &patches2);
+        const patch_text_2 = try patchToText(allocator, patches);
+        defer allocator.free(patch_text_2);
+        try testing.expectEqualStrings(expectedPatch, patch_text_2);
     }
 }
 
