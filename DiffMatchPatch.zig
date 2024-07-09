@@ -72,6 +72,13 @@ fn freeRangeDiffList(
     }
 }
 
+pub fn deinitPatchList(allocator: Allocator, patches: *PatchList) void {
+    defer patches.deinit(allocator);
+    for (patches.items) |*a_patch| {
+        deinitDiffList(allocator, &a_patch.diffs);
+    }
+}
+
 /// DMP with default configuration options
 pub const default = DiffMatchPatch{};
 
@@ -122,16 +129,6 @@ pub const Patch = struct {
     /// Start of patch in after text
     start2: usize = 0,
     length2: usize = 0,
-
-    pub fn toString(patch: Patch) ![]const u8 {
-        // TODO
-        _ = patch;
-    }
-
-    pub fn writeTo(writer: anytype) !usize {
-        // TODO
-        _ = writer;
-    }
 
     /// Make a clone of the Patch, including all Diffs.
     pub fn clone(patch: Patch, allocator: Allocator) !Patch {
@@ -3018,7 +3015,7 @@ fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
 /// @param patches List of Patch objects.
 /// @return Text representation of patches.
 pub fn patchToText(allocator: Allocator, patches: PatchList) ![]const u8 {
-    const text_array = try std.ArrayList(u8).init(allocator);
+    var text_array = std.ArrayList(u8).init(allocator);
     defer text_array.deinit();
     const writer = text_array.writer();
     try writePatch(writer, patches);
@@ -3027,8 +3024,8 @@ pub fn patchToText(allocator: Allocator, patches: PatchList) ![]const u8 {
 
 /// Stream a `PatchList` to the provided Writer.
 pub fn writePatch(writer: anytype, patches: PatchList) !void {
-    for (patches) |a_patch| {
-        try a_patch.writePatch(writer);
+    for (patches.items) |a_patch| {
+        try a_patch.writeText(writer);
     }
 }
 
@@ -3041,34 +3038,36 @@ pub fn patchFromText(allocator: Allocator, text: []const u8) !PatchList {
     if (text.len == 0) return PatchList{};
     var patches = PatchList{};
     errdefer patches.deinit(allocator);
-    var cursor = 0;
+    var cursor: usize = 0;
     while (cursor < text.len) {
         // TODO catch BadPatchString here and print diagnostic
+        try patches.ensureUnusedCapacity(allocator, 1);
         const cursor_delta, const patch = try patchFromHeader(allocator, text[cursor..]);
         cursor += cursor_delta;
-        try patches.append(allocator, patch);
+        patches.appendAssumeCapacity(patch);
     }
     return patches;
 }
 
 fn countDigits(text: []const u8) usize {
-    var idx = 0;
+    var idx: usize = 0;
     while (std.ascii.isDigit(text[idx])) : (idx += 1) {}
     return idx;
 }
 
 fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patch } {
-    var patch = Patch{};
+    var patch = Patch{ .diffs = DiffList{} };
     errdefer patch.deinit(allocator);
     var cursor: usize = undefined;
     if (std.mem.eql(u8, text[0..4], PATCH_HEAD)) {
         // Parse location and length in before text
+        const count = 4 + countDigits(text[4..]);
         patch.start1 = std.fmt.parseInt(
             usize,
-            text[4..],
+            text[4..count],
             10,
         ) catch return error.BadPatchString;
-        cursor = 4 + countDigits(text[4..]);
+        cursor = count;
         assert(cursor > 4);
         if (text[cursor] != ',') {
             cursor += 1;
@@ -3076,12 +3075,12 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
             patch.length1 = 1;
         } else {
             cursor += 1;
+            const delta = countDigits(text[cursor..]);
             patch.length1 = std.fmt.parseInt(
                 usize,
-                text[cursor..],
+                text[cursor .. cursor + delta],
                 10,
             ) catch return error.BadPatchString;
-            const delta = countDigits(text[cursor..]);
             assert(delta > 0);
             cursor += delta;
             if (patch.length1 != 0) {
@@ -3092,13 +3091,13 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
     // Parse location and length in after text.
     if (text[cursor] == ' ' and text[cursor + 1] == '+') {
         cursor += 2;
+        const delta1 = countDigits(text[cursor..]);
+        assert(delta1 > 0);
         patch.start2 = std.fmt.parseInt(
             usize,
-            text[cursor..],
+            text[cursor .. cursor + delta1],
             10,
         ) catch return error.BadPatchString;
-        const delta1 = 4 + countDigits(text[4..]);
-        assert(delta1 > 0);
         cursor += delta1;
         if (text[cursor] != ',') {
             cursor += 1;
@@ -3106,13 +3105,13 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
             patch.length2 = 1;
         } else {
             cursor += 1;
-            patch.length2 = std.fmt.parseInt(
-                usize,
-                text[cursor..],
-                10,
-            ) catch return error.BadPatchString;
             const delta2 = countDigits(text[cursor..]);
             assert(delta2 > 1);
+            patch.length2 = std.fmt.parseInt(
+                usize,
+                text[cursor .. cursor + delta2],
+                10,
+            ) catch return error.BadPatchString;
             cursor += delta2;
             if (patch.length2 != 0) {
                 patch.start2 -= 1;
@@ -3123,7 +3122,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         cursor += 4;
     } else return error.BadPatchString;
     // Eat the diffs
-    const patch_lines = std.mem.splitScalar(
+    var patch_lines = std.mem.splitScalar(
         u8,
         text[cursor..],
         '\n',
@@ -3135,7 +3134,12 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         if (line.len == 0) continue;
         // Microsoft encodes spaces as +, we don't, so we don't need this:
         // line = line.Replace("+", "%2b");
-        const diff_line = try decodeUri(allocator, line) catch return error.BadPatchString;
+        const diff_line = decodeUri(allocator, line[1..]) catch |e| {
+            switch (e) {
+                error.OutOfMemory => return e,
+                else => return error.BadPatchString,
+            }
+        };
         errdefer allocator.free(diff_line);
         switch (line[0]) {
             '+' => { // Insertion
@@ -3178,11 +3182,11 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
 
 /// Decode our URI-esque escaping
 fn decodeUri(allocator: Allocator, line: []const u8) ![]const u8 {
-    if (std.mem.indexOf(u8, line, '%')) |first| {
+    if (std.mem.indexOf(u8, line, "%")) |first| {
         // Text to decode.
         // Result will always be shorter than line:
         var new_line = try std.ArrayList(u8).initCapacity(allocator, line.len);
-        defer new_line.init;
+        defer new_line.deinit();
         try new_line.appendSlice(line[0..first]);
         var out_buf: [1]u8 = .{0};
         var codeunit = std.fmt.hexToBytes(
@@ -3191,8 +3195,8 @@ fn decodeUri(allocator: Allocator, line: []const u8) ![]const u8 {
         ) catch return error.BadPatchString;
         try new_line.append(codeunit[0]);
         var cursor = first + 3;
-        while (std.mem.indexOf(u8, line[cursor..], '%')) |next| {
-            codeunit = try std.fmt.hexToBytes(
+        while (std.mem.indexOf(u8, line[cursor..], "%")) |next| {
+            codeunit = std.fmt.hexToBytes(
                 &out_buf,
                 line[next + 1 .. next + 3],
             ) catch return error.BadPatchString;
@@ -5058,14 +5062,14 @@ test matchMain {
     dmp.match_threshold = 0.5;
 }
 
-test "patch to string" {
+fn testPatchToText(allocator: Allocator) !void {
     //
     var p: Patch = Patch{
         .start1 = 20,
         .start2 = 21,
         .length1 = 18,
         .length2 = 17,
-        .diffs = try sliceToDiffList(testing.allocator, &.{
+        .diffs = try sliceToDiffList(allocator, &.{
             .{ .operation = .equal, .text = "jump" },
             .{ .operation = .delete, .text = "s" },
             .{ .operation = .insert, .text = "ed" },
@@ -5075,28 +5079,37 @@ test "patch to string" {
             .{ .operation = .equal, .text = "\nlaz" },
         }),
     };
-    defer p.deinit(testing.allocator);
+    defer p.deinit(allocator);
     const strp = "@@ -21,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n %0Alaz\n";
-    const patch_str = try p.asText(testing.allocator);
-    defer testing.allocator.free(patch_str);
+    const patch_str = try p.asText(allocator);
+    defer allocator.free(patch_str);
     try testing.expectEqualStrings(strp, patch_str);
 }
 
-//public void patch_patchObjTest() {
-//  // Patch Object.
-//  Patch p = new Patch();
-//  p.start1 = 20;
-//  p.start2 = 21;
-//  p.length1 = 18;
-//  p.length2 = 17;
-//  p.diffs = new List<Diff> {
-//      new Diff(Operation.EQUAL, "jump"),
-//      new Diff(Operation.DELETE, "s"),
-//      new Diff(Operation.INSERT, "ed"),
-//      new Diff(Operation.EQUAL, " over "),
-//      new Diff(Operation.DELETE, "the"),
-//      new Diff(Operation.INSERT, "a"),
-//      new Diff(Operation.EQUAL, "\nlaz")};
-//  string strp = "@@ -21,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n %0alaz\n";
-//  assertEquals("Patch: toString.", strp, p.ToString());
-//}
+test "patch to text" {
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchToText,
+        .{},
+    );
+}
+
+fn testPatchRoundTrip(allocator: Allocator, patch_in: []const u8) !void {
+    var patches = try patchFromText(allocator, patch_in);
+    defer deinitPatchList(allocator, &patches);
+    const patch_out = try patchToText(allocator, patches);
+    defer allocator.free(patch_out);
+    try testing.expectEqualStrings(patch_in, patch_out);
+}
+
+test "patch from text" {
+    const allocator = testing.allocator;
+    var p0 = try patchFromText(allocator, "");
+    defer deinitPatchList(allocator, &p0);
+    try testing.expectEqual(0, p0.items.len);
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchRoundTrip,
+        .{"@@ -21,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n %0Alaz\n"},
+    );
+}
