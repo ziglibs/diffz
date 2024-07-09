@@ -484,7 +484,7 @@ fn diffHalfMatchInternal(
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
         errdefer allocator.free(suffix_after);
         const best_common_text = try best_common.toOwnedSlice(allocator);
-        errdefer allocator.free(best_common_text );
+        errdefer allocator.free(best_common_text);
         return .{
             .prefix_before = prefix_before,
             .suffix_before = suffix_before,
@@ -745,8 +745,7 @@ fn diffLineMode(
                         pointer - count_delete - count_insert,
                         count_delete + count_insert,
                     );
-                    try diffs.replaceRange(
-                        allocator,
+                    diffs.replaceRangeAssumeCapacity(
                         pointer - count_delete - count_insert,
                         count_delete + count_insert,
                         &.{},
@@ -929,8 +928,8 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                                 diffs.insertAssumeCapacity(0, Diff.init(.equal, text));
                                 pointer += 1;
                             }
-                            try text_insert.replaceRange(allocator, 0, common_length, &.{});
-                            try text_delete.replaceRange(allocator, 0, common_length, &.{});
+                            text_insert.replaceRangeAssumeCapacity(0, common_length, &.{});
+                            text_delete.replaceRangeAssumeCapacity(0, common_length, &.{});
                         }
                         // Factor out any common suffixies.
                         // @ZigPort this seems very wrong
@@ -950,7 +949,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                     pointer -= count_delete + count_insert;
                     if (count_delete + count_insert > 0) {
                         freeRangeDiffList(allocator, diffs, pointer, count_delete + count_insert);
-                        try diffs.replaceRange(allocator, pointer, count_delete + count_insert, &.{});
+                        diffs.replaceRangeAssumeCapacity(pointer, count_delete + count_insert, &.{});
                     }
 
                     if (text_delete.items.len != 0) {
@@ -1024,7 +1023,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                 allocator.free(old_pt1t);
                 diffs.items[pointer + 1].text = p1t;
                 freeRangeDiffList(allocator, diffs, pointer - 1, 1);
-                try diffs.replaceRange(allocator, pointer - 1, 1, &.{});
+                diffs.replaceRangeAssumeCapacity(pointer - 1, 1, &.{});
                 changes = true;
             } else if (std.mem.startsWith(u8, diffs.items[pointer].text, diffs.items[pointer + 1].text)) {
                 const old_ptm1 = diffs.items[pointer - 1].text;
@@ -1042,7 +1041,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                 allocator.free(old_pt);
                 diffs.items[pointer].text = pt;
                 freeRangeDiffList(allocator, diffs, pointer + 1, 1);
-                try diffs.replaceRange(allocator, pointer + 1, 1, &.{});
+                diffs.replaceRangeAssumeCapacity(pointer + 1, 1, &.{});
                 changes = true;
             }
         }
