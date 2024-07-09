@@ -2827,7 +2827,7 @@ fn patchSplitMax(
         var start1 = bigpatch.start1;
         var start2 = bigpatch.start2;
         // start with an empty precontext so that we can deinit consistently
-        var precontext = try allocator.alloc(u8, 0);
+        var precontext: []const u8 = try allocator.alloc(u8, 0);
         while (bigpatch.diffs.items.len != 0) {
             // Create one of several smaller patches.
             var patch = Patch{};
@@ -2899,15 +2899,15 @@ fn patchSplitMax(
                     }
                 }
             }
-            // Compute the head context for the next patch.
-            const context_len: usize = if (patch_margin > 0) 0 else precontext.len - patch_margin;
-            allocator.free(precontext);
-            if (context_len > 0) {
-                const after_text = try diffAfterText(allocator, patch.diffs);
-                defer allocator.free(after_text);
-                precontext = try allocator.dupe(u8, after_text[context_len..]);
+            // Compute the head context for the next patch
+            // TODO we don't use the last of these, so we can detect that
+            // condition and not creat it to begin with.
+            const after_text = try diffAfterText(allocator, patch.diffs);
+            if (patch_margin > after_text.len) {
+                precontext = after_text;
             } else {
-                precontext = try allocator.alloc(u8, 0);
+                defer allocator.free(after_text);
+                precontext = try allocator.dupe(u8, after_text[after_text.len - patch_margin ..]);
             }
             // Append the end context for this patch.
             const post_text = try diffBeforeText(allocator, bigpatch.diffs);
@@ -2961,8 +2961,7 @@ fn patchSplitMax(
                 x_i += 1;
                 try patches.insert(allocator, @intCast(x_i), patch);
             }
-        }
-        // Free final precontext.
+        } // We don't use the last precontext
         allocator.free(precontext);
     }
 }
