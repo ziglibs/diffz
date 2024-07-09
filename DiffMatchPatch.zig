@@ -21,8 +21,7 @@ fn freeRangeDiffList(
     start: usize,
     len: usize,
 ) void {
-    const after_range = start + len;
-    const range = diffs.items[start..after_range];
+    const range = diffs.items[start..][0..len];
     for (range) |d| {
         allocator.free(d.text);
     }
