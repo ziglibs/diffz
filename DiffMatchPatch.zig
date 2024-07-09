@@ -2912,9 +2912,11 @@ fn patchSplitMax(
             // Append the end context for this patch.
             const post_text = try diffBeforeText(allocator, bigpatch.diffs);
             const postcontext = post: {
+                errdefer allocator.free(post_text);
                 if (post_text.len > patch_margin) {
-                    defer allocator.free(post_text);
-                    break :post post_text[0..patch_margin];
+                    const truncated = try allocator.dupe(u8, post_text[0..patch_margin]);
+                    allocator.free(post_text);
+                    break :post truncated;
                 } else {
                     break :post post_text;
                 }
@@ -2926,8 +2928,12 @@ fn patchSplitMax(
                 if (maybe_last_diff) |last_diff| {
                     if (last_diff.operation == .equal) {
                         // free this diff and swap in a new one
-                        defer allocator.free(last_diff.text);
+                        defer {
+                            allocator.free(last_diff.text);
+                            allocator.free(postcontext);
+                        }
                         patch.diffs.items.len -= 1;
+                        try patch.diffs.ensureUnusedCapacity(allocator, 1);
                         const new_diff_text = try std.mem.concat(
                             allocator,
                             u8,
@@ -2936,13 +2942,13 @@ fn patchSplitMax(
                                 postcontext,
                             },
                         );
-                        try patch.diffs.append(
-                            allocator,
+                        patch.diffs.appendAssumeCapacity(
                             Diff{ .operation = .equal, .text = new_diff_text },
                         );
                     }
                 } else {
                     // New diff from postcontext.
+                    errdefer allocator.free(postcontext);
                     try patch.diffs.append(
                         allocator,
                         Diff{ .operation = .equal, .text = postcontext },
