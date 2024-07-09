@@ -374,11 +374,10 @@ fn diffCompute(
     check_lines: bool,
     deadline: u64,
 ) DiffError!DiffList {
-    var diffs = DiffList{};
-    errdefer deinitDiffList(allocator, &diffs);
-
     if (before.len == 0) {
         // Just add some text (speedup).
+        var diffs = DiffList{};
+        errdefer deinitDiffList(allocator, &diffs);
         try diffs.ensureUnusedCapacity(allocator, 1);
         diffs.appendAssumeCapacity(Diff.init(
             .insert,
@@ -389,6 +388,8 @@ fn diffCompute(
 
     if (after.len == 0) {
         // Just delete some text (speedup).
+        var diffs = DiffList{};
+        errdefer deinitDiffList(allocator, &diffs);
         try diffs.ensureUnusedCapacity(allocator, 1);
         diffs.appendAssumeCapacity(Diff.init(
             .delete,
@@ -402,6 +403,8 @@ fn diffCompute(
 
     if (std.mem.indexOf(u8, long_text, short_text)) |index| {
         // Shorter text is inside the longer text (speedup).
+        var diffs = DiffList{};
+        errdefer deinitDiffList(allocator, &diffs);
         const op: Diff.Operation = if (before.len > after.len)
             .delete
         else
@@ -425,6 +428,8 @@ fn diffCompute(
     if (short_text.len == 1) {
         // Single character string.
         // After the previous speedup, the character can't be an equality.
+        var diffs = DiffList{};
+        errdefer deinitDiffList(allocator, &diffs);
         try diffs.ensureUnusedCapacity(allocator, 2);
         diffs.appendAssumeCapacity(Diff.init(
             .delete,
@@ -442,13 +447,14 @@ fn diffCompute(
         // A half-match was found, sort out the return data.
         defer half_match.deinit(allocator);
         // Send both pairs off for separate processing.
-        const diffs_a = try dmp.diffInternal(
+        var diffs = try dmp.diffInternal(
             allocator,
             half_match.prefix_before,
             half_match.prefix_after,
             check_lines,
             deadline,
         );
+        errdefer deinitDiffList(allocator, &diffs);
         var diffs_b = try dmp.diffInternal(
             allocator,
             half_match.suffix_before,
@@ -466,7 +472,6 @@ fn diffCompute(
         }
 
         // Merge the results.
-        diffs = diffs_a;
         try diffs.ensureUnusedCapacity(allocator, 1);
         diffs.appendAssumeCapacity(
             Diff.init(.equal, try allocator.dupe(
@@ -628,7 +633,6 @@ fn diffHalfMatchInternal(
         errdefer allocator.free(prefix_after);
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
         const best_common_text = try best_common.toOwnedSlice(allocator);
-        errdefer allocator.free(best_common_text);
         return .{
             .prefix_before = prefix_before,
             .suffix_before = suffix_before,
@@ -1179,10 +1183,10 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                                 const ii = pointer - count_delete - count_insert - 1;
                                 var nt = try allocator.alloc(u8, diffs.items[ii].text.len + common_length);
                                 const ot = diffs.items[ii].text;
-                                defer allocator.free(ot);
                                 @memcpy(nt[0..ot.len], ot);
                                 @memcpy(nt[ot.len..], text_insert.items[0..common_length]);
                                 diffs.items[ii].text = nt;
+                                allocator.free(ot);
                             } else {
                                 try diffs.ensureUnusedCapacity(allocator, 1);
                                 const text = try allocator.dupe(u8, text_insert.items[0..common_length]);
@@ -1201,7 +1205,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                                 text_insert.items[text_insert.items.len - common_length ..],
                                 old_text,
                             });
-                            defer allocator.free(old_text);
+                            allocator.free(old_text);
                             text_insert.items.len -= common_length;
                             text_delete.items.len -= common_length;
                         }
@@ -3345,6 +3349,18 @@ fn testDiffHalfMatch(
     const maybe_result = try params.dmp.diffHalfMatch(allocator, params.before, params.after);
     defer if (maybe_result) |result| result.deinit(allocator);
     try testing.expectEqualDeep(params.expected, maybe_result);
+}
+
+fn testDiffHalfMatchLeak(allocator: Allocator) !void {
+    const dmp = DiffMatchPatch{};
+    const text1 = "The quick brown fox jumps over the lazy dog.";
+    const text2 = "That quick brown fox jumped over a lazy dog.";
+    var diffs = try dmp.diff(allocator, text2, text1, true);
+    deinitDiffList(allocator, &diffs);
+}
+
+test "diffHalfMatch leak regression test" {
+    try testing.checkAllAllocationFailures(testing.allocator, testDiffHalfMatchLeak, .{});
 }
 
 test diffHalfMatch {
