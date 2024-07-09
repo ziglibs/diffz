@@ -3070,7 +3070,6 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         cursor = count;
         assert(cursor > 4);
         if (text[cursor] != ',') {
-            cursor += 1;
             patch.start1 -= 1;
             patch.length1 = 1;
         } else {
@@ -3100,13 +3099,12 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         ) catch return error.BadPatchString;
         cursor += delta1;
         if (text[cursor] != ',') {
-            cursor += 1;
             patch.start2 -= 1;
             patch.length2 = 1;
         } else {
             cursor += 1;
             const delta2 = countDigits(text[cursor..]);
-            assert(delta2 > 1);
+            assert(delta2 > 0);
             patch.length2 = std.fmt.parseInt(
                 usize,
                 text[cursor .. cursor + delta2],
@@ -5112,4 +5110,20 @@ test "patch from text" {
         testPatchRoundTrip,
         .{"@@ -21,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n %0Alaz\n"},
     );
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        testPatchRoundTrip,
+        .{"@@ -1 +1 @@\n-a\n+b\n"},
+    );
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchRoundTrip,
+        .{"@@ -1,3 +0,0 @@\n-abc\n"},
+    );
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchRoundTrip,
+        .{"@@ -0,0 +1,3 @@\n+abc\n"},
+    );
+    try testing.expectError(error.BadPatchString, patchFromText(allocator, "Bad\nPatch\nString\n"));
 }
