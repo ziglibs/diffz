@@ -2514,10 +2514,25 @@ fn makePatchInternal(
         if (!first_patch)
             allocator.free(prepatch_text);
     }
+    // Calculate amount of extra bytes needed.
+    // This should let the allocator reuse freed space.
+    var extra: isize = 0;
+    for (diffs.items) |a_diff| {
+        switch (a_diff.operation) {
+            .insert => {
+                extra += @intCast(a_diff.text.len);
+            },
+            .delete => {
+                extra -= @intCast(a_diff.text.len);
+            },
+            .equal => continue,
+        }
+    }
+    const extra_u: usize = if (extra > 0) @intCast(extra) else 0;
     const dummy_diff = Diff{ .operation = .equal, .text = "" };
-    var postpatch = try std.ArrayList(u8).initCapacity(allocator, text.len);
+    var postpatch = try std.ArrayList(u8).initCapacity(allocator, text.len + extra_u);
     defer postpatch.deinit();
-    try postpatch.appendSlice(text);
+    postpatch.appendSliceAssumeCapacity(text);
     var patch = Patch{};
     for (diffs.items, 0..) |a_diff, i| {
         errdefer patch.deinit(allocator);
