@@ -824,7 +824,6 @@ fn diffLinesToCharsMunge(
 ) DiffError![]const u8 {
     var line_start: isize = 0;
     var line_end: isize = -1;
-    var line: []const u8 = undefined;
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     // Walk the text, pulling out a Substring for each line.
@@ -834,7 +833,7 @@ fn diffLinesToCharsMunge(
             break :b @as(isize, @intCast(std.mem.indexOf(u8, text[@intCast(line_start)..], "\n") orelse
                 break :b @intCast(text.len - 1))) + line_start;
         };
-        line = text[@intCast(line_start) .. @as(usize, @intCast(line_start)) + @as(usize, @intCast(line_end + 1 - line_start))];
+        var line = text[@intCast(line_start) .. @as(usize, @intCast(line_start)) + @as(usize, @intCast(line_end + 1 - line_start))];
 
         if (line_hash.get(line)) |value| {
             try chars.append(allocator, @intCast(value));
