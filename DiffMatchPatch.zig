@@ -2476,7 +2476,7 @@ const DiffHandling = enum {
     own,
 };
 
-pub fn makePatchFromTexts(
+pub fn diffAndMakePatch(
     dmp: DiffMatchPatch,
     allocator: Allocator,
     text1: []const u8,
@@ -5270,7 +5270,7 @@ test "testPatchAddContext" {
 fn testMakePatch(allocator: Allocator) !void {
     var dmp = DiffMatchPatch{};
     dmp.match_max_bits = 32; // Need this for compat with translated tests
-    var null_patch = try dmp.makePatchFromTexts(allocator, "", "");
+    var null_patch = try dmp.diffAndMakePatch(allocator, "", "");
     defer deinitPatchList(allocator, &null_patch);
     const null_patch_text = try patchToText(allocator, null_patch);
     defer allocator.free(null_patch_text);
@@ -5279,7 +5279,7 @@ fn testMakePatch(allocator: Allocator) !void {
     const text2 = "That quick brown fox jumped over a lazy dog.";
     { // The second patch must be "-21,17 +21,18", not "-22,17 +21,18" due to rolling context.
         const expectedPatch = "@@ -1,8 +1,7 @@\n Th\n-at\n+e\n  qui\n@@ -21,17 +21,18 @@\n jump\n-ed\n+s\n  over \n-a\n+the\n  laz\n";
-        var patches = try dmp.makePatchFromTexts(allocator, text2, text1);
+        var patches = try dmp.diffAndMakePatch(allocator, text2, text1);
         defer deinitPatchList(allocator, &patches);
         const patch_text = try patchToText(allocator, patches);
         defer allocator.free(patch_text);
@@ -5287,7 +5287,7 @@ fn testMakePatch(allocator: Allocator) !void {
     }
     {
         const expectedPatch = "@@ -1,11 +1,12 @@\n Th\n-e\n+at\n  quick b\n@@ -22,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n  laz\n";
-        var patches = try dmp.makePatchFromTexts(allocator, text1, text2);
+        var patches = try dmp.diffAndMakePatch(allocator, text1, text2);
         defer deinitPatchList(allocator, &patches);
         const patch_text = try patchToText(allocator, patches);
         defer allocator.free(patch_text);
