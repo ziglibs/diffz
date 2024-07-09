@@ -2398,7 +2398,7 @@ fn patchAddContext(
         const max_width: usize = dmp.match_max_bits - (2 * dmp.patch_margin);
         while (std.mem.indexOf(u8, text, pattern) != std.mem.lastIndexOf(u8, text, pattern) and pattern.len < max_width) {
             padding += dmp.patch_margin;
-            const pat_start = @max(0, patch.start2 - padding);
+            const pat_start = if (padding > patch.start2) 0 else patch.start2 - padding;
             const pat_end = pat_start + @min(text.len, patch.start2 + patch.length1 + padding);
             pattern = text[pat_start..pat_end];
         }
@@ -2407,7 +2407,7 @@ fn patchAddContext(
     padding += dmp.patch_margin;
     // Add the prefix.
     const prefix = pre: {
-        var pre_start = @max(0, patch.start2 - padding);
+        var pre_start = if (padding > patch.start2) 0 else patch.start2 - padding;
         // Make sure we're not breaking a codepoint.
         while (is_follow(text[pre_start]) and pre_start > 0) {
             pre_start -= 1;
@@ -5148,6 +5148,7 @@ test "testPatchAddContext" {
     const allocator = testing.allocator;
     var dmp = DiffMatchPatch{};
     dmp.patch_margin = 4;
+    // Simple case.
     try std.testing.checkAllAllocationFailures(
         allocator,
         testPatchAddContext,
@@ -5156,6 +5157,39 @@ test "testPatchAddContext" {
             "@@ -21,4 +21,10 @@\n-jump\n+somersault\n",
             "The quick brown fox jumps over the lazy dog.",
             "@@ -17,12 +17,18 @@\n fox \n-jump\n+somersault\n s ov\n",
+        },
+    );
+    // Not enough trailing context.
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        testPatchAddContext,
+        .{
+            dmp,
+            "@@ -21,4 +21,10 @@\n-jump\n+somersault\n",
+            "The quick brown fox jumps.",
+            "@@ -17,10 +17,16 @@\n fox \n-jump\n+somersault\n s.\n",
+        },
+    );
+    // Not enough leading context.
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        testPatchAddContext,
+        .{
+            dmp,
+            "@@ -3 +3,2 @@\n-e\n+at\n",
+            "The quick brown fox jumps.",
+            "@@ -1,7 +1,8 @@\n Th\n-e\n+at\n  qui\n",
+        },
+    );
+    // Ambiguity.
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        testPatchAddContext,
+        .{
+            dmp,
+            "@@ -3 +3,2 @@\n-e\n+at\n",
+            "The quick brown fox jumps.  The quick brown fox crashes.",
+            "@@ -1,27 +1,28 @@\n Th\n-e\n+at\n  quick brown fox jumps. \n",
         },
     );
 }
