@@ -5361,7 +5361,6 @@ fn testPatchSplitMax(allocator: Allocator) !void {
         defer deinitPatchList(allocator, &patches);
         const expected_patch = "@@ -1,32 +1,46 @@\n+X\n ab\n+X\n cd\n+X\n ef\n+X\n gh\n+X\n ij\n+X\n kl\n+X\n mn\n+X\n op\n+X\n qr\n+X\n st\n+X\n uv\n+X\n wx\n+X\n yz\n+X\n 012345\n@@ -25,13 +39,18 @@\n zX01\n+X\n 23\n+X\n 45\n+X\n 67\n+X\n 89\n+X\n 0\n";
         try dmp.patchSplitMax(allocator, &patches);
-        defer deinitPatchList(allocator, &patches);
         const patch_text = try patchToText(allocator, patches);
         defer allocator.free(patch_text);
         try testing.expectEqualStrings(expected_patch, patch_text);
