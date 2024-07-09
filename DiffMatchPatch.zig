@@ -122,7 +122,7 @@ pub const Diff = struct {
 
 pub const Patch = struct {
     /// Diffs to be applied
-    diffs: DiffList, // TODO This should be a Diff
+    diffs: DiffList = DiffList{},
     /// Start of patch in before text
     start1: usize = 0,
     length1: usize = 0,
@@ -2480,14 +2480,14 @@ fn makePatchInternal(
     diffs: DiffList,
     diff_act: DiffHandling,
 ) !PatchList {
-    const patches = PatchList{};
+    var patches = PatchList{};
     if (diffs.items.len == 0) {
         return patches; // Empty diff means empty patchlist
     }
 
     var patch = Patch{};
-    var char_count1 = 0;
-    var char_count2 = 0;
+    var char_count1: usize = 0;
+    var char_count2: usize = 0;
     // This avoids freeing the original copy of the text:
     var first_patch = true;
     var prepatch_text = text;
@@ -2498,52 +2498,55 @@ fn makePatchInternal(
     var postpatch = try std.ArrayList(u8).initCapacity(allocator, text.len);
     defer postpatch.deinit();
     try postpatch.appendSlice(text);
-    for (diffs.items) |a_diff| {
+    for (diffs.items, 0..) |a_diff, i| {
         if (patch.diffs.items.len == 0 and a_diff.operation != .equal) {
             patch.start1 = char_count1;
             patch.start2 = char_count2;
         }
         switch (a_diff.operation) {
             .insert => {
-                const d = if (diff_act == .copy) a_diff.clone(allocator) else a_diff;
-                try patch.diffs.append(allocator, d);
+                try patch.diffs.ensureUnusedCapacity(allocator, 1);
+                const d = if (diff_act == .copy) try a_diff.clone(allocator) else a_diff;
+                patch.diffs.appendAssumeCapacity(d);
                 patch.length2 += a_diff.text.len;
                 try postpatch.insertSlice(char_count2, a_diff.text);
             },
             .delete => {
-                //
-                const d = if (diff_act == .copy) a_diff.clone(allocator) else a_diff;
-                try patch.diffs.append(allocator, d);
+                try patch.diffs.ensureUnusedCapacity(allocator, 1);
+                const d = if (diff_act == .copy) try a_diff.clone(allocator) else a_diff;
+                patch.diffs.appendAssumeCapacity(d);
                 patch.length1 += a_diff.text.len;
-                try postpatch.replaceRange(char_count2, a_diff.text.len, .{});
+                try postpatch.replaceRange(char_count2, a_diff.text.len, "");
             },
             .equal => {
                 //
-                if (a_diff.text.len <= 2 * dmp.patch_margin and patch.diffs.items.len != 0 and a_diff != diffs.items[diffs.items.len]) {
+                if (a_diff.text.len <= 2 * dmp.patch_margin and patch.diffs.items.len != 0 and !a_diff.eql(diffs.items[diffs.items.len])) {
                     // Small equality inside a patch.
-                    patch.diffs.ensureUnusedCapacity(allocator, 1);
+                    try patch.diffs.ensureUnusedCapacity(allocator, 1);
                     const d = if (diff_act == .copy) try a_diff.clone(allocator) else a_diff;
-                    patch.diffs.appendAssumeCapacity(allocator, d);
+                    patch.diffs.appendAssumeCapacity(d);
                     patch.length1 += a_diff.text.len;
                     patch.length2 += a_diff.text.len;
                 }
                 if (a_diff.text.len >= 2 * dmp.patch_margin) {
                     // Time for a new patch.
                     if (patch.diffs.items.len != 0) {
-                        // free the Diff if we own it
+                        // Free the Diff if we own it.
                         if (diff_act == .own) {
                             allocator.free(a_diff.text);
-                            a_diff.text = ""; // for errdefer
+                            // Replace with null patch to prevent double-free on error
+                            patch.diffs.items[i] = Diff{ .operation = .equal, .text = "" };
                         }
-                        try patchAddContext(allocator, patch, prepatch_text);
-                        try patches.append(allocator, patch);
+                        try dmp.patchAddContext(allocator, &patch, prepatch_text);
+                        try patches.ensureUnusedCapacity(allocator, 1);
+                        patches.appendAssumeCapacity(patch);
                         patch = Patch{};
                         // Unlike Unidiff, our patch lists have a rolling context.
                         // https://github.com/google/diff-match-patch/wiki/Unidiff
                         // Update prepatch text & pos to reflect the application of the
                         // just completed patch.
                         if (first_patch) {
-                            // no free on first
+                            // no free on first, we don't own the original text
                             first_patch = false;
                         } else {
                             allocator.free(prepatch_text);
@@ -2558,16 +2561,18 @@ fn makePatchInternal(
         if (a_diff.operation != .insert) {
             char_count1 += a_diff.text.len;
         }
-        if (a_diff.operation != .remove) {
+        if (a_diff.operation != .delete) {
             char_count2 += a_diff.text.len;
         }
     } // end for loop
 
     // Pick up the leftover patch if not empty.
     if (patch.diffs.items.len != 0) {
-        try patchAddContext(allocator, patch, prepatch_text);
-        try patches.append(allocator, patch);
+        try dmp.patchAddContext(allocator, &patch, prepatch_text);
+        try patches.ensureUnusedCapacity(allocator, 1);
+        patches.appendAssumeCapacity(patch);
     }
+    return patches;
 }
 
 /// Compute a list of patches to turn text1 into text2.
@@ -2584,20 +2589,25 @@ pub fn makePatch(
     try dmp.makePatchInternal(allocator, text, diffs, .copy);
 }
 
-pub fn makePatchFromTexts(allocator: Allocator, text1: []const u8, text2: []const u8) !PatchList {
-    const diffs = try diff(@This(), allocator, text1, text2, true);
-    errdefer diffs.deinit(allocator);
+pub fn makePatchFromTexts(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    text1: []const u8,
+    text2: []const u8,
+) !PatchList {
+    var diffs = try dmp.diff(allocator, text1, text2, true);
+    errdefer deinitDiffList(allocator, &diffs);
     if (diffs.items.len > 2) {
-        try diffCleanupSemantic(diffs);
-        try diffCleanupEfficiency(diffs);
+        try diffCleanupSemantic(allocator, &diffs);
+        try dmp.diffCleanupEfficiency(allocator, &diffs);
     }
-    return try makePatchInternal(allocator, text1, diffs, .own);
+    return try dmp.makePatchInternal(allocator, text1, diffs, .own);
 }
 
-pub fn makePatchFromDiffs(allocator: Allocator, diffs: DiffList) !PatchList {
+pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: DiffList) !PatchList {
     const text1 = try diffBeforeText(allocator, diffs);
     defer allocator.free(text1);
-    return try makePatch(allocator, text1, diffs, .copy);
+    return try dmp.makePatch(allocator, text1, diffs, .copy);
 }
 
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
@@ -5191,5 +5201,24 @@ test "testPatchAddContext" {
             "The quick brown fox jumps.  The quick brown fox crashes.",
             "@@ -1,27 +1,28 @@\n Th\n-e\n+at\n  quick brown fox jumps. \n",
         },
+    );
+    // TODO: This will need some patches which check the Unicode handling.
+}
+
+fn testMakePatch(allocator: Allocator) !void {
+    var dmp = DiffMatchPatch{};
+    dmp.match_max_bits = 32; // Need this for compat with translated tests
+    var null_patch = try dmp.makePatchFromTexts(allocator, "", "");
+    defer deinitPatchList(allocator, &null_patch);
+    const null_patch_text = try patchToText(allocator, null_patch);
+    defer allocator.free(null_patch_text);
+    try testing.expectEqualStrings("", null_patch_text);
+}
+
+test "testMakePatch" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testMakePatch,
+        .{},
     );
 }
