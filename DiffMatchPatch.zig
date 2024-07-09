@@ -4,28 +4,6 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const DiffList = ArrayListUnmanaged(Diff);
-
-/// Deinit an `ArrayListUnmanaged(Diff)` and the allocated slices of
-/// text in each `Diff`.
-pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
-    defer diffs.deinit(allocator);
-    for (diffs.items) |d| {
-        allocator.free(d.text);
-    }
-}
-
-fn freeRangeDiffList(
-    allocator: Allocator,
-    diffs: *DiffList,
-    start: usize,
-    len: usize,
-) void {
-    const range = diffs.items[start..][0..len];
-    for (range) |d| {
-        allocator.free(d.text);
-    }
-}
 
 /// DMP with default configuration options
 pub const default = DiffMatchPatch{};
@@ -95,7 +73,8 @@ patch_margin: u16 = 4,
 
 pub const DiffError = error{OutOfMemory};
 
-/// Find the differences between two texts.
+/// Find the differences between two texts.  The return value
+/// must be freed with `deinitDiffList(allocator, &diffs)`.
 /// @param before Old string to be diffed.
 /// @param after New string to be diffed.
 /// @param checklines Speedup flag.  If false, then don't run a
@@ -117,6 +96,29 @@ pub fn diff(
     else
         @as(u64, @intCast(std.time.milliTimestamp())) + dmp.diff_timeout;
     return dmp.diffInternal(allocator, before, after, check_lines, deadline);
+}
+
+const DiffList = ArrayListUnmanaged(Diff);
+
+/// Deinit an `ArrayListUnmanaged(Diff)` and the allocated slices of
+/// text in each `Diff`.
+pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
+    defer diffs.deinit(allocator);
+    for (diffs.items) |d| {
+        allocator.free(d.text);
+    }
+}
+
+fn freeRangeDiffList(
+    allocator: Allocator,
+    diffs: *DiffList,
+    start: usize,
+    len: usize,
+) void {
+    const range = diffs.items[start..][0..len];
+    for (range) |d| {
+        allocator.free(d.text);
+    }
 }
 
 fn diffInternal(
