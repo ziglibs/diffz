@@ -150,7 +150,7 @@ pub const Patch = struct {
     }
 
     pub fn deinit(patch: *Patch, allocator: Allocator) void {
-        deinitDiffList(allocator, patch.diffs);
+        deinitDiffList(allocator, &patch.diffs);
     }
 
     /// Emit patch in Unidiff format, as specifified here:
@@ -163,7 +163,7 @@ pub const Patch = struct {
         var text_array = std.ArrayList(u8).init(allocator);
         defer text_array.deinit();
         const writer = text_array.writer();
-        try patch.writeText(writer, patch);
+        try patch.writeText(writer);
         return text_array.toOwnedSlice();
     }
 
@@ -171,7 +171,7 @@ pub const Patch = struct {
 
     /// Stream textual patch representation to Writer.  See `asText`
     /// for more information.
-    pub fn writeText(writer: anytype, patch: Patch) !void {
+    pub fn writeText(patch: Patch, writer: anytype) !void {
         // Write header.
         _ = try writer.write(PATCH_HEAD);
         // Stream coordinates
@@ -190,15 +190,15 @@ pub const Patch = struct {
         } else {
             try format(writer, "{d},{d}", .{ patch.start2 + 1, patch.length2 });
         }
-        _ = writer.write(PATCH_TAIL);
+        _ = try writer.write(PATCH_TAIL);
         // Escape the body of the patch with %xx notation.
-        for (patch.diffs) |a_diff| {
+        for (patch.diffs.items) |a_diff| {
             switch (a_diff.operation) {
                 .insert => try writer.writeByte('+'),
                 .delete => try writer.writeByte('-'),
-                .equal => try writer.writeByte('='),
+                .equal => try writer.writeByte(' '),
             }
-            _ = try writeUriEncoded(writer, diff.text);
+            _ = try writeUriEncoded(writer, a_diff.text);
             try writer.writeByte('\n');
         }
         return;
@@ -5057,3 +5057,46 @@ test matchMain {
     ));
     dmp.match_threshold = 0.5;
 }
+
+test "patch to string" {
+    //
+    var p: Patch = Patch{
+        .start1 = 20,
+        .start2 = 21,
+        .length1 = 18,
+        .length2 = 17,
+        .diffs = try sliceToDiffList(testing.allocator, &.{
+            .{ .operation = .equal, .text = "jump" },
+            .{ .operation = .delete, .text = "s" },
+            .{ .operation = .insert, .text = "ed" },
+            .{ .operation = .equal, .text = " over " },
+            .{ .operation = .delete, .text = "the" },
+            .{ .operation = .insert, .text = "a" },
+            .{ .operation = .equal, .text = "\nlaz" },
+        }),
+    };
+    defer p.deinit(testing.allocator);
+    const strp = "@@ -21,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n %0Alaz\n";
+    const patch_str = try p.asText(testing.allocator);
+    defer testing.allocator.free(patch_str);
+    try testing.expectEqualStrings(strp, patch_str);
+}
+
+//public void patch_patchObjTest() {
+//  // Patch Object.
+//  Patch p = new Patch();
+//  p.start1 = 20;
+//  p.start2 = 21;
+//  p.length1 = 18;
+//  p.length2 = 17;
+//  p.diffs = new List<Diff> {
+//      new Diff(Operation.EQUAL, "jump"),
+//      new Diff(Operation.DELETE, "s"),
+//      new Diff(Operation.INSERT, "ed"),
+//      new Diff(Operation.EQUAL, " over "),
+//      new Diff(Operation.DELETE, "the"),
+//      new Diff(Operation.INSERT, "a"),
+//      new Diff(Operation.EQUAL, "\nlaz")};
+//  string strp = "@@ -21,18 +22,17 @@\n jump\n-s\n+ed\n  over \n-the\n+a\n %0alaz\n";
+//  assertEquals("Patch: toString.", strp, p.ToString());
+//}
