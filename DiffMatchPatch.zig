@@ -2392,7 +2392,7 @@ fn patchAddContext(
     // TODO the fixup logic here might make patterns too large?
     // It should be ok, because big patches get broken up.  Hmm.
     // Also, the SimpleNote maintained branch does it this way.
-    var padding = 0;
+    var padding: usize = 0;
     { // Grow the pattern around the patch until unique, to set padding amount.
         var pattern = text[patch.start2 .. patch.start2 + patch.length1];
         const max_width: usize = dmp.match_max_bits - (2 * dmp.patch_margin);
@@ -2413,26 +2413,23 @@ fn patchAddContext(
             pre_start -= 1;
         } // Assuming we did everything else right, pre_end should be
         // properly placed.
-        const pre_end = pre_start + patch.start2;
-        break :pre text[pre_start..pre_end];
+        break :pre text[pre_start..patch.start2];
     };
     if (prefix.len != 0) {
         try patch.diffs.ensureUnusedCapacity(allocator, 1);
-        patch.diffs.appendAssumeCapacity(
-            Diff.init(
-                .equal,
-                try allocator.dupe(u8, prefix),
-            ),
-        );
+        patch.diffs.insertAssumeCapacity(0, Diff.init(
+            .equal,
+            try allocator.dupe(u8, prefix),
+        ));
     }
     // Add the suffix.
     const suffix = post: {
         const post_start = patch.start2 + patch.length1;
         // In case we messed up somewhere:
         assert(!is_follow(text[post_start]));
-        var post_end = post_start + @min(text.len, patch.start2 + patch.length1 + padding);
+        var post_end = @min(text.len, patch.start2 + patch.length1 + padding);
         // Prevent broken codepoints here as well: Lead bytes, or follow with another follow
-        while (!std.ascii.isASCII(text[post_end]) and post_end + 1 < text.len and is_follow(text[post_end + 1])) {
+        while (post_end + 1 < text.len and !std.ascii.isASCII(text[post_end]) and is_follow(text[post_end + 1])) {
             post_end += 1;
             // Special case: penultimate with another follow at end
             if (post_end + 2 == text.len and is_follow(text[post_end + 1])) {
@@ -2440,6 +2437,7 @@ fn patchAddContext(
                 break; // Not actually necessary, but polite.
             }
         }
+        post_end = @min(post_end, text.len);
         break :post text[post_start..post_end];
     };
     if (suffix.len != 0) {
@@ -5126,4 +5124,38 @@ test "patch from text" {
         .{"@@ -0,0 +1,3 @@\n+abc\n"},
     );
     try testing.expectError(error.BadPatchString, patchFromText(allocator, "Bad\nPatch\nString\n"));
+}
+
+fn testPatchAddContext(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    patch_text: []const u8,
+    text: []const u8,
+    expect: []const u8,
+) !void {
+    _, var patch = try patchFromHeader(allocator, patch_text);
+    defer patch.deinit(allocator);
+    const patch_og = try patch.asText(allocator);
+    defer allocator.free(patch_og);
+    try testing.expectEqualStrings(patch_text, patch_og);
+    try dmp.patchAddContext(allocator, &patch, text);
+    const patch_out = try patch.asText(allocator);
+    defer allocator.free(patch_out);
+    try testing.expectEqualStrings(expect, patch_out);
+}
+
+test "testPatchAddContext" {
+    const allocator = testing.allocator;
+    var dmp = DiffMatchPatch{};
+    dmp.patch_margin = 4;
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        testPatchAddContext,
+        .{
+            dmp,
+            "@@ -21,4 +21,10 @@\n-jump\n+somersault\n",
+            "The quick brown fox jumps over the lazy dog.",
+            "@@ -17,12 +17,18 @@\n fox \n-jump\n+somersault\n s ov\n",
+        },
+    );
 }
