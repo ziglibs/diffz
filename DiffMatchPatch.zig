@@ -3089,6 +3089,7 @@ fn patchAddPadding(
 /// @return Array of Patch objects.
 fn patchListClone(allocator: Allocator, patches: *PatchList) !PatchList {
     var new_patches = PatchList{};
+    errdefer deinitPatchList(allocator, &new_patches);
     try new_patches.ensureTotalCapacity(allocator, patches.items.len);
     for (patches.items) |patch| {
         new_patches.appendAssumeCapacity(try patch.clone(allocator));
