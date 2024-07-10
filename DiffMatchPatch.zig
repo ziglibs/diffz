@@ -2780,7 +2780,7 @@ pub fn patchApply(
                 } else {
                     try diffCleanupSemanticLossless(allocator, &diffs);
                     var index1: usize = 0;
-                    for (diffs.items) |a_diff| {
+                    for (a_patch.diffs.items) |a_diff| {
                         if (a_diff.operation != .equal) {
                             const index2 = diffIndex(diffs, index1);
                             if (a_diff.operation == .insert) {
