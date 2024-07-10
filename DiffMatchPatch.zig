@@ -2938,6 +2938,12 @@ fn patchSplitMax(
                     break :post post_text;
                 }
             };
+            var guard_postcontext = true;
+            errdefer {
+                if (guard_postcontext) {
+                    allocator.free(postcontext);
+                }
+            }
             // Compute the head context for the next patch, if we're going to
             // need it.
             if (bigpatch.diffs.items.len != 0) {
@@ -2960,6 +2966,7 @@ fn patchSplitMax(
                     defer {
                         allocator.free(last_diff.?.text);
                         allocator.free(postcontext);
+                        guard_postcontext = false;
                     }
                     patch.diffs.items.len -= 1;
                     const new_diff_text = try std.mem.concat(
@@ -2978,6 +2985,7 @@ fn patchSplitMax(
                     patch.diffs.appendAssumeCapacity(
                         Diff{ .operation = .equal, .text = postcontext },
                     );
+                    guard_postcontext = false;
                 }
             }
             if (!empty) {
