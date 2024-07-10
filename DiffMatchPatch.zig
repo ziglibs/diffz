@@ -5579,6 +5579,32 @@ test "testPatchApply" {
             true,
         },
     );
+    // Failed match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "The quick brown fox jumps over the lazy dog.",
+            "That quick brown fox jumped over a lazy dog.",
+            "I am the very model of a modern major general.",
+            "I am the very model of a modern major general.",
+            false,
+        },
+    );
+    // Big delete, small change.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "x1234567890123456789012345678901234567890123456789012345678901234567890y",
+            "xabcy",
+            "x123456789012345678901234567890-----++++++++++-----123456789012345678901234567890y",
+            "xabcy",
+            true,
+        },
+    );
 }
 
 test "partial match" {
