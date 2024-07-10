@@ -2722,6 +2722,7 @@ pub fn patchApply(
                 expected_loc,
             );
             if (maybe_start) |start| {
+                // Ok because we tested and text1.len is larger.
                 const e_start = text1.len - m_max_b;
                 maybe_end = try dmp.matchMain(
                     allocator,
@@ -2747,9 +2748,9 @@ pub fn patchApply(
             // results[x] = true;
             const text2 = t2: {
                 if (maybe_end) |end| {
-                    break :t2 text.items[start..@min(end + m_max_b, og_text.len)];
+                    break :t2 text.items[start..@min(end + m_max_b, text.items.len)];
                 } else {
-                    break :t2 text.items[start..@min(start + text1.len, og_text.len)];
+                    break :t2 text.items[start..@min(start + text1.len, text.items.len)];
                 }
             };
             if (std.mem.eql(u8, text1, text2)) {
@@ -2787,15 +2788,16 @@ pub fn patchApply(
                                 try text.insertSlice(start + index2, a_diff.text);
                             } else if (a_diff.operation == .delete) {
                                 // Deletion
+                                const delete_at = diffIndex(diffs, index1 + a_diff.text.len) - index2;
                                 text.replaceRangeAssumeCapacity(
                                     start + index2,
-                                    diffIndex(diffs, index1 + a_diff.text.len),
+                                    delete_at,
                                     &.{},
                                 );
                             }
-                            if (a_diff.operation != .delete) {
-                                index1 += a_diff.text.len;
-                            }
+                        }
+                        if (a_diff.operation != .delete) {
+                            index1 += a_diff.text.len;
                         }
                     }
                 }
@@ -5529,6 +5531,7 @@ test "testPatchApply" {
     dmp.match_distance = 1000;
     dmp.match_threshold = 0.5;
     dmp.patch_delete_threshold = 0.5;
+    dmp.match_max_bits = 32; // TODO may not be relevant
     // Null case.
     try testing.checkAllAllocationFailures(
         testing.allocator,
@@ -5542,7 +5545,7 @@ test "testPatchApply" {
             true,
         },
     );
-
+    // Exact match.
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testPatchApply,
@@ -5554,5 +5557,35 @@ test "testPatchApply" {
             "That quick brown fox jumped over a lazy dog.",
             true,
         },
+    );
+    // Partial match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "The quick brown fox jumps over the lazy dog.",
+            "That quick brown fox jumped over a lazy dog.",
+            "The quick red rabbit jumps over the tired tiger.",
+            "That quick red rabbit jumped over a tired tiger.",
+            true,
+        },
+    );
+}
+
+test "partial match" {
+    var dmp = DiffMatchPatch{};
+    dmp.match_distance = 1000;
+    dmp.match_threshold = 0.5;
+    dmp.patch_delete_threshold = 0.5;
+    dmp.match_max_bits = 32;
+    try testPatchApply(
+        testing.allocator,
+        dmp,
+        "The quick brown fox jumps over the lazy dog.",
+        "That quick brown fox jumped over a lazy dog.",
+        "The quick red rabbit jumps over the tired tiger.",
+        "That quick red rabbit jumped over a tired tiger.",
+        true,
     );
 }
