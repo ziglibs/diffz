@@ -2660,6 +2660,10 @@ pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: Diff
     return try dmp.makePatch(allocator, text1, diffs);
 }
 
+inline fn cast(as: type, val: anytype) as {
+    return @intCast(val);
+}
+
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
 /// is the patched text, the second of which is...
 ///
@@ -2687,22 +2691,22 @@ pub fn patchApply(
     var all_applied = true;
     // Deep copy the patches so that no changes are made to originals.
     var patches = try patchListClone(allocator, og_patches);
-    defer patches.deinit(allocator);
+    defer deinitPatchList(allocator, &patches);
     const null_padding = try dmp.patchAddPadding(allocator, &patches);
     defer allocator.free(null_padding);
-    var text_array = try std.ArrayList(u8).initCapacity(allocator, og_text.len + 2 * null_padding.len);
-    defer text_array.deinit();
-    text_array.appendSliceAssumeCapacity(null_padding);
-    text_array.appendSliceAssumeCapacity(og_text);
-    text_array.appendSliceAssumeCapacity(null_padding);
+    var text = try std.ArrayList(u8).initCapacity(allocator, og_text.len + 2 * null_padding.len);
+    defer text.deinit();
+    text.appendSliceAssumeCapacity(null_padding);
+    text.appendSliceAssumeCapacity(og_text);
+    text.appendSliceAssumeCapacity(null_padding);
     try dmp.patchSplitMax(allocator, &patches);
     // delta keeps track of the offset between the expected and actual
     // location of the previous patch.  If there are patches expected at
     // positions 10 and 20, but the first patch was found at 12, delta is 2
     // and the second patch has an effective expected position of 22.
-    var delta: usize = 0;
+    var delta: isize = 0;
     for (patches.items) |a_patch| {
-        const expected_loc = a_patch.start2 + delta;
+        const expected_loc = cast(usize, (cast(isize, a_patch.start2) + delta));
         const text1 = try diffBeforeText(allocator, a_patch.diffs);
         defer allocator.free(text1);
         var maybe_start: ?usize = null;
@@ -2713,7 +2717,7 @@ pub fn patchApply(
             // in the case of a monster delete.
             maybe_start = try dmp.matchMain(
                 allocator,
-                text_array.items,
+                text.items,
                 text1[0..m_max_b],
                 expected_loc,
             );
@@ -2721,7 +2725,7 @@ pub fn patchApply(
                 const e_start = text1.len - m_max_b;
                 maybe_end = try dmp.matchMain(
                     allocator,
-                    text_array.items,
+                    text.items,
                     text1[e_start..],
                     e_start + expected_loc,
                 );
@@ -2735,24 +2739,24 @@ pub fn patchApply(
                 }
             }
         } else {
-            maybe_start = try dmp.matchMain(allocator, og_text, text1, expected_loc);
+            maybe_start = try dmp.matchMain(allocator, text.items, text1, expected_loc);
         }
         if (maybe_start) |start| {
             // Found a match.  :)
-            delta = start - expected_loc;
+            delta = cast(isize, start) - cast(isize, expected_loc);
             // results[x] = true;
             const text2 = t2: {
                 if (maybe_end) |end| {
-                    break :t2 og_text[start..@min(end + m_max_b, og_text.len)];
+                    break :t2 text.items[start..@min(end + m_max_b, og_text.len)];
                 } else {
-                    break :t2 og_text[start..@min(start + text1.len, og_text.len)];
+                    break :t2 text.items[start..@min(start + text1.len, og_text.len)];
                 }
             };
             if (std.mem.eql(u8, text1, text2)) {
                 // Perfect match, just shove the replacement text in.
                 const diff_text = try diffAfterText(allocator, a_patch.diffs);
                 defer allocator.free(diff_text);
-                try text_array.replaceRange(start, text1.len, diff_text);
+                try text.replaceRange(start, text1.len, diff_text);
             } else {
                 // Imperfect match.  Run a diff to get a framework of equivalent
                 // indices.
@@ -2780,10 +2784,10 @@ pub fn patchApply(
                             const index2 = diffIndex(diffs, index1);
                             if (a_diff.operation == .insert) {
                                 // Insertion
-                                try text_array.insertSlice(start + index2, a_diff.text);
+                                try text.insertSlice(start + index2, a_diff.text);
                             } else if (a_diff.operation == .delete) {
                                 // Deletion
-                                text_array.replaceRangeAssumeCapacity(
+                                text.replaceRangeAssumeCapacity(
                                     start + index2,
                                     diffIndex(diffs, index1 + a_diff.text.len),
                                     &.{},
@@ -2800,13 +2804,13 @@ pub fn patchApply(
             // No match found.  :(
             all_applied = false;
             // Subtract the delta for this failed patch from subsequent patches.
-            delta -= a_patch.length2 - a_patch.length1;
+            delta -= cast(isize, a_patch.length2) - cast(isize, a_patch.length1);
         }
     }
     // strip padding
-    text_array.replaceRangeAssumeCapacity(0, null_padding.len, &.{});
-    text_array.items.len -= null_padding.len;
-    return .{ try text_array.toOwnedSlice(), all_applied };
+    text.replaceRangeAssumeCapacity(0, null_padding.len, &.{});
+    text.items.len -= null_padding.len;
+    return .{ try text.toOwnedSlice(), all_applied };
 }
 
 // Look through the patches and break up any which are longer than the
