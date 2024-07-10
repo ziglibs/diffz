@@ -3027,7 +3027,7 @@ fn patchAddPadding(
         // patches.items[0].diffs = diffs_start;
     } else if (pad_len > diffs_start.items[0].text.len) {
         // Grow first equality.
-        var diff1 = diffs_start.items[0];
+        var diff1 = &diffs_start.items[0];
         const old_diff_text = diff1.text;
         const extra_len = pad_len - diff1.text.len;
         diff1.text = try std.mem.concat(
@@ -3057,7 +3057,7 @@ fn patchAddPadding(
         patch_end.length2 += pad_len;
     } else if (pad_len > diffs_end.getLast().text.len) {
         // Grow last equality.
-        var last_diff = diffs_end.getLast();
+        var last_diff = &diffs_end.items[diffs_end.items.len - 1];
         const old_diff_text = last_diff.text;
         const extra_len = pad_len - last_diff.text.len;
         last_diff.text = try std.mem.concat(
@@ -3066,8 +3066,8 @@ fn patchAddPadding(
             &.{ last_diff.text, paddingcodes.items[0..extra_len] },
         );
         allocator.free(old_diff_text);
-        patch_end.length1 += extra_len;
         patch_end.length2 += extra_len;
+        patch_end.length1 += extra_len;
     }
     return paddingcodes.toOwnedSlice();
 }
@@ -5462,6 +5462,7 @@ fn testPatchAddPadding(
 }
 
 test "patchAddPadding" {
+    // Both edges full.
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testPatchAddPadding,
@@ -5470,6 +5471,28 @@ test "patchAddPadding" {
             "test",
             "@@ -0,0 +1,4 @@\n+test\n",
             "@@ -1,8 +1,12 @@\n %01%02%03%04\n+test\n %01%02%03%04\n",
+        },
+    );
+    // Both edges partial.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchAddPadding,
+        .{
+            "XY",
+            "XtestY",
+            "@@ -1,2 +1,6 @@\n X\n+test\n Y\n",
+            "@@ -2,8 +2,12 @@\n %02%03%04X\n+test\n Y%01%02%03\n",
+        },
+    );
+    // Both edges none.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchAddPadding,
+        .{
+            "XXXXYYYY",
+            "XXXXtestYYYY",
+            "@@ -1,8 +1,12 @@\n XXXX\n+test\n YYYY\n",
+            "@@ -5,8 +5,12 @@\n XXXX\n+test\n YYYY\n",
         },
     );
 }
