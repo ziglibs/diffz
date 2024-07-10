@@ -2046,8 +2046,7 @@ pub fn matchMain(
     // Clamp the loc to fit within text.
     const loc = @min(passed_loc, text.len);
     if (std.mem.eql(u8, text, pattern)) {
-        // Shortcut (potentially not guaranteed by the algorithm)
-        // TODO would be good to know what the above means...
+        // Shortcut
         return 0;
     } else if (text.len == 0) {
         // Nothing to match.
@@ -2881,6 +2880,9 @@ fn patchSplitMax(
                     patch.diffs.appendAssumeCapacity(bigpatch.diffs.orderedRemove(0));
                 } else {
                     // Deletion or equality.  Only take as much as we can stomach.
+                    // Note: because this is an internal function, we don't care
+                    // about codepoint splitting, which won't affect the final
+                    // result.
                     const text_end = @min(diff_text.len, patch_size - patch.length1 - patch_margin);
                     const new_diff_text = diff_text[0..text_end];
                     patch.length1 += new_diff_text.len;
@@ -2911,17 +2913,6 @@ fn patchSplitMax(
                     }
                 }
             }
-            // Compute the head context for the next patch
-            // TODO we don't use the last of these, so we can detect that
-            // condition and not creat it to begin with.
-            const after_text = try diffAfterText(allocator, patch.diffs);
-            if (patch_margin > after_text.len) {
-                precontext = after_text;
-            } else {
-                defer allocator.free(after_text);
-                precontext = try allocator.dupe(u8, after_text[after_text.len - patch_margin ..]);
-            }
-            guard_precontext = true;
             // Append the end context for this patch.
             const post_text = try diffBeforeText(allocator, bigpatch.diffs);
             const postcontext = post: {
@@ -2933,6 +2924,18 @@ fn patchSplitMax(
                     break :post post_text;
                 }
             };
+            // Compute the head context for the next patch, if we're going to
+            // need it.
+            if (bigpatch.diffs.items.len != 0) {
+                const after_text = try diffAfterText(allocator, patch.diffs);
+                if (patch_margin > after_text.len) {
+                    precontext = after_text;
+                } else {
+                    defer allocator.free(after_text);
+                    precontext = try allocator.dupe(u8, after_text[after_text.len - patch_margin ..]);
+                }
+                guard_precontext = true;
+            }
             if (postcontext.len != 0) {
                 try patch.diffs.ensureUnusedCapacity(allocator, 1);
                 patch.length1 += postcontext.len;
@@ -2972,7 +2975,7 @@ fn patchSplitMax(
                 patch.deinit(allocator);
             }
         } // We don't use the last precontext
-        allocator.free(precontext);
+        // allocator.free(precontext);
     }
 }
 
@@ -2983,22 +2986,23 @@ fn patchSplitMax(
 fn patchAddPadding(
     dmp: DiffMatchPatch,
     allocator: Allocator,
-    patches: PatchList,
+    patches: *PatchList,
 ) ![]const u8 {
     assert(patches.items.len != 0);
     const pad_len = dmp.patch_margin;
     var paddingcodes = try std.ArrayList(u8).initCapacity(allocator, pad_len);
     defer paddingcodes.deinit();
+
     {
         var control_code: u8 = 1;
         while (control_code <= pad_len) : (control_code += 1) {
-            try paddingcodes.append(control_code);
+            paddingcodes.appendAssumeCapacity(control_code);
         }
     }
     // Bump all the patches forward.
-    for (patches) |a_patch| {
-        a_patch.start1 += pad_len;
-        a_patch.start2 += pad_len;
+    for (patches.items) |*a_patch| {
+        a_patch.*.start1 += pad_len;
+        a_patch.*.start2 += pad_len;
     }
     // Add some padding on start of first diff.
     var patch = patches.items[0];
@@ -3006,7 +3010,7 @@ fn patchAddPadding(
     if (diffs.items.len == 0 or diffs.items[0].operation != .equal) {
         // Add nullPadding equality.
         try diffs.ensureUnusedCapacity(allocator, 1);
-        diffs.insert(
+        diffs.insertAssumeCapacity(
             0,
             Diff{
                 .operation = .equal,
@@ -3019,7 +3023,7 @@ fn patchAddPadding(
         patch.start2 -= pad_len;
         assert(patch.start2 == 0);
         patch.length1 += pad_len;
-        patch.lenght2 += pad_len;
+        patch.length2 += pad_len;
     } else if (pad_len > diffs.items[0].text.len) {
         // Grow first equality.
         var diff1 = diffs.items[0];
@@ -3027,8 +3031,8 @@ fn patchAddPadding(
         const extra_len = pad_len - diff1.text.len;
         diff1.text = try std.mem.concat(
             allocator,
-            paddingcodes.items[diff1.text.len..],
-            diff1.text,
+            u8,
+            &.{ paddingcodes.items[diff1.text.len..], diff1.text },
         );
         patch.start1 -= extra_len;
         patch.start2 -= extra_len;
@@ -3038,7 +3042,7 @@ fn patchAddPadding(
     // Add some padding on end of last diff.
     patch = patches.getLast();
     diffs = patch.diffs;
-    if (diffs.items.len == 0 or diffs.getLast().opeation != .equal) {
+    if (diffs.items.len == 0 or diffs.getLast().operation != .equal) {
         // Add nullPadding equality.
         try diffs.ensureUnusedCapacity(allocator, 1);
         diffs.appendAssumeCapacity(
@@ -3056,8 +3060,8 @@ fn patchAddPadding(
         const extra_len = pad_len - last_diff.text.len;
         last_diff.text = try std.mem.concat(
             allocator,
-            last_diff.text,
-            paddingcodes[0..extra_len],
+            u8,
+            &.{ last_diff.text, paddingcodes.items[0..extra_len] },
         );
         patch.length1 += extra_len;
         patch.length2 += extra_len;
@@ -4118,7 +4122,8 @@ test diffBisect {
         .dmp = this,
         .before = a,
         .after = b,
-        .deadline = std.math.maxInt(u64), // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
+        // std.time returns an i64
+        .deadline = std.math.maxInt(i64),
         .expected = &.{
             .{ .operation = .delete, .text = "c" },
             .{ .operation = .insert, .text = "m" },
@@ -4133,7 +4138,7 @@ test diffBisect {
         .dmp = this,
         .before = a,
         .after = b,
-        .deadline = 0, // Travis TODO not sure if 0 is correct for  DateTime.MinValue
+        .deadline = 0, // Do not run prior to 1970
         .expected = &.{
             .{ .operation = .delete, .text = "cat" },
             .{ .operation = .insert, .text = "map" },
@@ -5424,11 +5429,37 @@ fn testPatchSplitMax(allocator: Allocator) !void {
     }
 }
 
-test "testPatchSplitMax" {
+test patchSplitMax {
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testPatchSplitMax,
         .{},
     );
     try testPatchSplitMax(testing.allocator);
+}
+
+fn testPatchAddPadding(
+    allocator: Allocator,
+    params: struct { []const u8, []const u8, []const u8 },
+) !void {
+    const dmp = DiffMatchPatch{};
+    const before, const after, const expect = params;
+    var patches = try dmp.diffAndMakePatch(allocator, before, after);
+    defer deinitPatchList(allocator, &patches);
+    const codes = try dmp.patchAddPadding(allocator, &patches);
+    allocator.free(codes);
+    const patch_text = try patchToText(allocator, patches);
+    defer allocator.free(patch_text);
+    try testing.expectEqualStrings(expect, patch_text);
+}
+
+test "patchAddPadding" {
+    try testPatchAddPadding(
+        testing.allocator,
+        .{
+            "",
+            "test",
+            "@@ -0,0 +1,4 @@\n+test\n",
+        },
+    );
 }
