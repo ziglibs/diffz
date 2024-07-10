@@ -133,9 +133,12 @@ pub const Patch = struct {
     /// Make a clone of the Patch, including all Diffs.
     pub fn clone(patch: Patch, allocator: Allocator) !Patch {
         var new_diffs = DiffList{};
-        new_diffs.initCapacity(allocator, patch.diffs.items.len);
-        for (patch.diffs) |a_diff| {
-            try new_diffs.append(try a_diff.clone(allocator));
+        try new_diffs.ensureTotalCapacity(allocator, patch.diffs.items.len);
+        errdefer {
+            deinitDiffList(allocator, &new_diffs);
+        }
+        for (patch.diffs.items) |a_diff| {
+            new_diffs.appendAssumeCapacity(try a_diff.clone(allocator));
         }
         return Patch{
             .diffs = new_diffs,
@@ -2670,7 +2673,7 @@ pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: Diff
 pub fn patchApply(
     dmp: DiffMatchPatch,
     allocator: Allocator,
-    og_patches: PatchList,
+    og_patches: *PatchList,
     og_text: []const u8,
 ) !struct { []const u8, bool } {
     if (og_patches.items.len == 0) {
@@ -2683,21 +2686,22 @@ pub fn patchApply(
     // So we can report if all patches were applied:
     var all_applied = true;
     // Deep copy the patches so that no changes are made to originals.
-    const patches = try patchListClone(allocator, og_patches);
+    var patches = try patchListClone(allocator, og_patches);
     defer patches.deinit(allocator);
-    const null_padding = try patchAddPadding(allocator, patches);
-    var text_array = try std.ArrayList(u8).initCapacity(og_text.len);
+    const null_padding = try dmp.patchAddPadding(allocator, &patches);
+    defer allocator.free(null_padding);
+    var text_array = try std.ArrayList(u8).initCapacity(allocator, og_text.len + 2 * null_padding.len);
     defer text_array.deinit();
-    try text_array.appendSlice(null_padding);
-    try text_array.appendSlice(og_text);
-    try text_array.appendSlice(null_padding);
-    try patchSplitMax(allocator, patches);
+    text_array.appendSliceAssumeCapacity(null_padding);
+    text_array.appendSliceAssumeCapacity(og_text);
+    text_array.appendSliceAssumeCapacity(null_padding);
+    try dmp.patchSplitMax(allocator, &patches);
     // delta keeps track of the offset between the expected and actual
     // location of the previous patch.  If there are patches expected at
     // positions 10 and 20, but the first patch was found at 12, delta is 2
     // and the second patch has an effective expected position of 22.
     var delta: usize = 0;
-    for (patches) |a_patch| {
+    for (patches.items) |a_patch| {
         const expected_loc = a_patch.start2 + delta;
         const text1 = try diffBeforeText(allocator, a_patch.diffs);
         defer allocator.free(text1);
@@ -2707,7 +2711,7 @@ pub fn patchApply(
         if (text1.len > m_max_b) {
             // patchSplitMax will only provide an oversized pattern
             // in the case of a monster delete.
-            maybe_start = dmp.matchMain(
+            maybe_start = try dmp.matchMain(
                 allocator,
                 text_array.items,
                 text1[0..m_max_b],
@@ -2715,7 +2719,7 @@ pub fn patchApply(
             );
             if (maybe_start) |start| {
                 const e_start = text1.len - m_max_b;
-                maybe_end = dmp.matchMain(
+                maybe_end = try dmp.matchMain(
                     allocator,
                     text_array.items,
                     text1[e_start..],
@@ -2731,7 +2735,7 @@ pub fn patchApply(
                 }
             }
         } else {
-            maybe_start = dmp.matchMain(allocator, og_text, text1, expected_loc);
+            maybe_start = try dmp.matchMain(allocator, og_text, text1, expected_loc);
         }
         if (maybe_start) |start| {
             // Found a match.  :)
@@ -2752,22 +2756,26 @@ pub fn patchApply(
             } else {
                 // Imperfect match.  Run a diff to get a framework of equivalent
                 // indices.
-                const diffs = try dmp.diff(
+                var diffs = try dmp.diff(
                     allocator,
                     text1,
                     text2,
                     false,
                 );
+                defer deinitDiffList(allocator, &diffs);
                 const t1_l_float: f64 = @floatFromInt(text1.len);
-                const bad_match = diffLevenshtein(diffs) / t1_l_float > @This().patch_delete_threshold;
+                // TODO this is the only place diffLevenshtein gets used, so it
+                // should just return a float. Probably requires changing the tests.
+                const levenshtein_float: f64 = @floatFromInt(diffLevenshtein(diffs));
+                const bad_match = levenshtein_float / t1_l_float > dmp.patch_delete_threshold;
                 if (text1.len > m_max_b and bad_match) {
                     // The end points match, but the content is unacceptably bad.
                     // results[x] = false;
                     all_applied = false;
                 } else {
-                    diffCleanupSemanticLossless(allocator, diffs);
+                    try diffCleanupSemanticLossless(allocator, &diffs);
                     var index1: usize = 0;
-                    for (diffs) |a_diff| {
+                    for (diffs.items) |a_diff| {
                         if (a_diff.operation != .equal) {
                             const index2 = diffIndex(diffs, index1);
                             if (a_diff.operation == .insert) {
@@ -2775,10 +2783,10 @@ pub fn patchApply(
                                 try text_array.insertSlice(start + index2, a_diff.text);
                             } else if (a_diff.operation == .delete) {
                                 // Deletion
-                                try text_array.replaceRange(
+                                text_array.replaceRangeAssumeCapacity(
                                     start + index2,
                                     diffIndex(diffs, index1 + a_diff.text.len),
-                                    .{},
+                                    &.{},
                                 );
                             }
                             if (a_diff.operation != .delete) {
@@ -2796,9 +2804,9 @@ pub fn patchApply(
         }
     }
     // strip padding
-    try text_array.replaceRange(0, null_padding.len, .{});
+    text_array.replaceRangeAssumeCapacity(0, null_padding.len, &.{});
     text_array.items.len -= null_padding.len;
-    return .{ text_array.toOwnedSlice(), all_applied };
+    return .{ try text_array.toOwnedSlice(), all_applied };
 }
 
 // Look through the patches and break up any which are longer than the
@@ -3075,16 +3083,11 @@ fn patchAddPadding(
 /// Given an array of patches, return another array that is identical.
 /// @param patches Array of Patch objects.
 /// @return Array of Patch objects.
-fn patchListClone(allocator: Allocator, patches: PatchList) !PatchList {
+fn patchListClone(allocator: Allocator, patches: *PatchList) !PatchList {
     var new_patches = PatchList{};
-    errdefer {
-        for (new_patches) |p| {
-            p.deinit(allocator);
-        }
-    }
-    new_patches.initCapacity(allocator, patches.items.len);
-    for (patches) |patch| {
-        try new_patches.append(allocator, try patch.clone(allocator));
+    try new_patches.ensureTotalCapacity(allocator, patches.items.len);
+    for (patches.items) |patch| {
+        new_patches.appendAssumeCapacity(try patch.clone(allocator));
     }
     return new_patches;
 }
@@ -5461,7 +5464,7 @@ fn testPatchAddPadding(
     if (false) try testing.expectEqualStrings(expect_after, patch_text_after);
 }
 
-test "patchAddPadding" {
+test patchAddPadding {
     // Both edges full.
     try testing.checkAllAllocationFailures(
         testing.allocator,
@@ -5493,6 +5496,44 @@ test "patchAddPadding" {
             "XXXXtestYYYY",
             "@@ -1,8 +1,12 @@\n XXXX\n+test\n YYYY\n",
             "@@ -5,8 +5,12 @@\n XXXX\n+test\n YYYY\n",
+        },
+    );
+}
+
+fn testPatchApply(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    before: []const u8,
+    after: []const u8,
+    apply_to: []const u8,
+    expect: []const u8,
+    all_applied: bool,
+) !void {
+    var patches = try dmp.diffAndMakePatch(allocator, before, after);
+    defer deinitPatchList(allocator, &patches);
+    const result, const success = try dmp.patchApply(allocator, &patches, apply_to);
+    defer allocator.free(result);
+    try testing.expectEqual(all_applied, success);
+    try testing.expectEqualStrings(expect, result);
+}
+
+test "testPatchApply" {
+    // These tests differ from the source, because we just return one
+    // bool for if all patches were successfully applied or not.
+    var dmp = DiffMatchPatch{};
+    dmp.match_distance = 1000;
+    dmp.match_threshold = 0.5;
+    dmp.patch_delete_threshold = 0.5;
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "",
+            "",
+            "Hello World",
+            "Hello World",
+            true,
         },
     );
 }
