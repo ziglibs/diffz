@@ -5529,6 +5529,7 @@ test "testPatchApply" {
     dmp.match_distance = 1000;
     dmp.match_threshold = 0.5;
     dmp.patch_delete_threshold = 0.5;
+    // Null case.
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testPatchApply,
@@ -5538,6 +5539,19 @@ test "testPatchApply" {
             "",
             "Hello World",
             "Hello World",
+            true,
+        },
+    );
+
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "The quick brown fox jumps over the lazy dog.",
+            "That quick brown fox jumped over a lazy dog.",
+            "The quick brown fox jumps over the lazy dog.",
+            "That quick brown fox jumped over a lazy dog.",
             true,
         },
     );
