@@ -2,7 +2,7 @@ import os
 import git
 
 # Variables
-REPO_PATH = '/Users/atman/code/opp/ziglibs/diffz'
+REPO_PATH = '.'
 FILE_NAME = 'DiffMatchPatch.zig'
 OUTPUT_DIR = 'file-versions'
 
