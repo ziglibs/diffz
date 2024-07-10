@@ -2819,6 +2819,7 @@ fn patchSplitMax(
     while (x_i < patches.items.len) : (x_i += 1) {
         const x: usize = @intCast(x_i);
         if (patches.items[x].length1 <= patch_size) continue;
+
         // We have a big ol' patch.
         var bigpatch = patches.orderedRemove(x);
         defer bigpatch.deinit(allocator);
@@ -2960,6 +2961,8 @@ fn patchSplitMax(
                 // Goes after x, and we need increment to skip:
                 x_i += 1;
                 try patches.insert(allocator, @intCast(x_i), patch);
+            } else {
+                patch.deinit(allocator);
             }
         } // We don't use the last precontext
         allocator.free(precontext);
@@ -5363,6 +5366,20 @@ fn testPatchSplitMax(allocator: Allocator) !void {
         const patch_text = try patchToText(allocator, patches);
         defer allocator.free(patch_text);
         try testing.expectEqualStrings(expected_patch, patch_text);
+    }
+    {
+        var patches = try dmp.diffAndMakePatch(
+            allocator,
+            "abcdef1234567890123456789012345678901234567890123456789012345678901234567890uvwxyz",
+            "abcdefuvwxyz",
+        );
+        defer deinitPatchList(allocator, &patches);
+        const text_before = try patchToText(allocator, patches);
+        defer allocator.free(text_before);
+        try dmp.patchSplitMax(allocator, &patches);
+        const text_after = try patchToText(allocator, patches);
+        defer allocator.free(text_after);
+        try testing.expectEqualStrings(text_before, text_after);
     }
 }
 
