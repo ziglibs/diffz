@@ -2985,8 +2985,8 @@ fn patchSplitMax(
                     patch.diffs.appendAssumeCapacity(
                         Diff{ .operation = .equal, .text = postcontext },
                     );
-                    guard_postcontext = false;
                 }
+                guard_postcontext = false;
             }
             if (!empty) {
                 // Insert the next patch
@@ -5602,6 +5602,90 @@ test "testPatchApply" {
             "xabcy",
             "x123456789012345678901234567890-----++++++++++-----123456789012345678901234567890y",
             "xabcy",
+            true,
+        },
+    );
+    // Big delete, big change 1.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "x1234567890123456789012345678901234567890123456789012345678901234567890y",
+            "xabcy",
+            "x12345678901234567890---------------++++++++++---------------12345678901234567890y",
+            "xabc12345678901234567890---------------++++++++++---------------12345678901234567890y",
+            false,
+        },
+    );
+    dmp.patch_delete_threshold = 0.6;
+    // Big delete, big change 2.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "x1234567890123456789012345678901234567890123456789012345678901234567890y",
+            "xabcy",
+            "x12345678901234567890---------------++++++++++---------------12345678901234567890y",
+            "xabcy",
+            true,
+        },
+    );
+    dmp.patch_delete_threshold = 0.6;
+    dmp.match_threshold = 0.0;
+    dmp.match_distance = 0;
+    // Compensate for failed patch.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "abcdefghijklmnopqrstuvwxyz--------------------1234567890",
+            "abcXXXXXXXXXXdefghijklmnopqrstuvwxyz--------------------1234567YYYYYYYYYY890",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ--------------------1234567890",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ--------------------1234567YYYYYYYYYY890",
+            false,
+        },
+    );
+    dmp.match_threshold = 0.5;
+    dmp.match_distance = 1000;
+    // Edge exact match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "",
+            "test",
+            "",
+            "test",
+            true,
+        },
+    );
+    // Near edge exact match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "XY",
+            "XtestY",
+            "XY",
+            "XtestY",
+            true,
+        },
+    );
+    // Edge partial match.
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchApply,
+        .{
+            dmp,
+            "y",
+            "y123",
+            "x",
+            "x123",
             true,
         },
     );
