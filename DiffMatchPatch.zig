@@ -5539,7 +5539,6 @@ test "testPatchApply" {
     dmp.match_distance = 1000;
     dmp.match_threshold = 0.5;
     dmp.patch_delete_threshold = 0.5;
-    dmp.match_max_bits = 32; // TODO may not be relevant
     // Null case.
     try testing.checkAllAllocationFailures(
         testing.allocator,
@@ -5691,19 +5690,37 @@ test "testPatchApply" {
     );
 }
 
-test "partial match" {
+test "patching does not affect patches" {
+    const allocator = std.testing.allocator;
     var dmp = DiffMatchPatch{};
     dmp.match_distance = 1000;
     dmp.match_threshold = 0.5;
     dmp.patch_delete_threshold = 0.5;
-    dmp.match_max_bits = 32;
-    try testPatchApply(
-        testing.allocator,
-        dmp,
+    dmp.match_max_bits = 32; // Need this so test #2 splits
+    var patches1 = try dmp.diffAndMakePatch(allocator, "", "test");
+    defer deinitPatchList(allocator, &patches1);
+    const patch1_str = try patchToText(allocator, patches1);
+    defer allocator.free(patch1_str);
+    const result1, _ = try dmp.patchApply(allocator, &patches1, "");
+    allocator.free(result1);
+    const patch1_str_after = try patchToText(allocator, patches1);
+    defer allocator.free(patch1_str_after);
+    try testing.expectEqualStrings(patch1_str, patch1_str_after);
+    var patches2 = try dmp.diffAndMakePatch(
+        allocator,
         "The quick brown fox jumps over the lazy dog.",
-        "That quick brown fox jumped over a lazy dog.",
-        "The quick red rabbit jumps over the tired tiger.",
-        "That quick red rabbit jumped over a tired tiger.",
-        true,
+        "Woof",
     );
+    defer deinitPatchList(allocator, &patches2);
+    const patch2_str = try patchToText(allocator, patches2);
+    defer allocator.free(patch2_str);
+    const result2, _ = try dmp.patchApply(
+        allocator,
+        &patches2,
+        "The quick brown fox jumps over the lazy dog.",
+    );
+    allocator.free(result2);
+    const patch2_str_after = try patchToText(allocator, patches2);
+    defer allocator.free(patch2_str_after);
+    try testing.expectEqualStrings(patch2_str, patch2_str_after);
 }
