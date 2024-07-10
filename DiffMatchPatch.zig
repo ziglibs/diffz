@@ -2830,8 +2830,15 @@ fn patchSplitMax(
         // start with an empty precontext so that we can deinit consistently
         var precontext: []const u8 = try allocator.alloc(u8, 0);
         while (bigpatch.diffs.items.len != 0) {
+            var guard_precontext = true;
+            errdefer {
+                if (guard_precontext) {
+                    allocator.free(precontext);
+                }
+            }
             // Create one of several smaller patches.
             var patch = Patch{};
+            errdefer patch.deinit(allocator);
             var empty = true;
             patch.start1 = start1 - precontext.len;
             patch.start2 = start2 - precontext.len;
@@ -2839,6 +2846,7 @@ fn patchSplitMax(
                 patch.length2 = precontext.len;
                 patch.length1 = patch.length2;
                 try patch.diffs.ensureUnusedCapacity(allocator, 1);
+                guard_precontext = false;
                 patch.diffs.appendAssumeCapacity(
                     Diff{
                         .operation = .equal,
@@ -2857,13 +2865,12 @@ fn patchSplitMax(
                     try patch.diffs.ensureUnusedCapacity(allocator, 1);
                     patch.diffs.appendAssumeCapacity(bigpatch.diffs.orderedRemove(0));
                     empty = false;
-                } else if (cond: {
+                } else if (patch.diffs.items.len == 1 and cond: {
                     // zig fmt simply will not line break if clauses :/
                     const a = diff_type == .delete;
-                    const b = patch.diffs.items.len == 1;
-                    const c = patch.diffs.items[0].operation == .equal;
-                    const d = diff_text.len > 2 * patch_size;
-                    break :cond a and b and c and d;
+                    const b = patch.diffs.items[0].operation == .equal;
+                    const c = diff_text.len > 2 * patch_size;
+                    break :cond a and b and c;
                 }) {
                     // This is a large deletion.  Let it pass in one chunk.
                     patch.length1 += diff_text.len;
@@ -2910,48 +2917,44 @@ fn patchSplitMax(
                 defer allocator.free(after_text);
                 precontext = try allocator.dupe(u8, after_text[after_text.len - patch_margin ..]);
             }
+            guard_precontext = true;
             // Append the end context for this patch.
             const post_text = try diffBeforeText(allocator, bigpatch.diffs);
             const postcontext = post: {
-                errdefer allocator.free(post_text);
                 if (post_text.len > patch_margin) {
+                    defer allocator.free(post_text);
                     const truncated = try allocator.dupe(u8, post_text[0..patch_margin]);
-                    allocator.free(post_text);
                     break :post truncated;
                 } else {
                     break :post post_text;
                 }
             };
             if (postcontext.len != 0) {
+                try patch.diffs.ensureUnusedCapacity(allocator, 1);
                 patch.length1 += postcontext.len;
                 patch.length2 += postcontext.len;
-                const maybe_last_diff = patch.diffs.getLastOrNull();
-                if (maybe_last_diff) |last_diff| {
-                    if (last_diff.operation == .equal) {
-                        // free this diff and swap in a new one
-                        defer {
-                            allocator.free(last_diff.text);
-                            allocator.free(postcontext);
-                        }
-                        patch.diffs.items.len -= 1;
-                        try patch.diffs.ensureUnusedCapacity(allocator, 1);
-                        const new_diff_text = try std.mem.concat(
-                            allocator,
-                            u8,
-                            &.{
-                                last_diff.text,
-                                postcontext,
-                            },
-                        );
-                        patch.diffs.appendAssumeCapacity(
-                            Diff{ .operation = .equal, .text = new_diff_text },
-                        );
+                const last_diff = patch.diffs.getLastOrNull();
+                if (last_diff != null and last_diff.?.operation == .equal) {
+                    // free this diff and swap in a new one
+                    defer {
+                        allocator.free(last_diff.?.text);
+                        allocator.free(postcontext);
                     }
+                    patch.diffs.items.len -= 1;
+                    const new_diff_text = try std.mem.concat(
+                        allocator,
+                        u8,
+                        &.{
+                            last_diff.?.text,
+                            postcontext,
+                        },
+                    );
+                    patch.diffs.appendAssumeCapacity(
+                        Diff{ .operation = .equal, .text = new_diff_text },
+                    );
                 } else {
                     // New diff from postcontext.
-                    errdefer allocator.free(postcontext);
-                    try patch.diffs.append(
-                        allocator,
+                    patch.diffs.appendAssumeCapacity(
                         Diff{ .operation = .equal, .text = postcontext },
                     );
                 }
@@ -5384,12 +5387,10 @@ fn testPatchSplitMax(allocator: Allocator) !void {
 }
 
 test "testPatchSplitMax" {
-    if (false) {
-        try testing.checkAllAllocationFailures(
-            testing.allocator,
-            testPatchSplitMax,
-            .{},
-        );
-    }
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchSplitMax,
+        .{},
+    );
     try testPatchSplitMax(testing.allocator);
 }
