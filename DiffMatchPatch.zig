@@ -4449,6 +4449,84 @@ test diff {
     }
 }
 
+test "Unicode diffs" {
+    const allocator = std.testing.allocator;
+    const this = DiffMatchPatch{};
+    {
+        var greek_diff = try this.diff(
+            allocator,
+            "αβγ",
+            "αβδ",
+            false,
+        );
+        defer deinitDiffList(allocator, &greek_diff);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "αβ"),
+            Diff.init(.delete, "γ"),
+            Diff.init(.insert, "δ"),
+        }), greek_diff.items);
+    }
+    {
+        // ө is 0xd3, 0xa9, թ is 0xd6, 0xa9
+        var prefix_diff = try this.diff(
+            allocator,
+            "abө",
+            "abթ",
+            false,
+        );
+        defer deinitDiffList(allocator, &prefix_diff);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "ab"),
+            Diff.init(.delete, "ө"),
+            Diff.init(.insert, "թ"),
+        }), prefix_diff.items);
+    }
+    {
+        var mid_diff = try this.diff(
+            allocator,
+            "αөβ",
+            "αթβ",
+            false,
+        );
+        defer deinitDiffList(allocator, &mid_diff);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "α"),
+            Diff.init(.delete, "ө"),
+            Diff.init(.insert, "թ"),
+            Diff.init(.equal, "β"),
+        }), mid_diff.items);
+    }
+    {
+        var mid_prefix = try this.diff(
+            allocator,
+            "αβλ",
+            "αδλ",
+            false,
+        );
+        defer deinitDiffList(allocator, &mid_prefix);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "α"),
+            Diff.init(.delete, "β"),
+            Diff.init(.insert, "δ"),
+            Diff.init(.equal, "λ"),
+        }), mid_prefix.items);
+    }
+    {
+        var three_prefix = try this.diff(
+            allocator,
+            "三亥两",
+            "三亥临",
+            false,
+        );
+        defer deinitDiffList(allocator, &three_prefix);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "三亥"),
+            Diff.init(.delete, "两"),
+            Diff.init(.insert, "临"),
+        }), three_prefix.items);
+    }
+}
+
 fn testDiffCleanupSemantic(
     allocator: std.mem.Allocator,
     params: struct {
