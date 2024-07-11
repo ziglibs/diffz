@@ -850,6 +850,7 @@ fn fixupBisection(text1: []const u8, text2: []const u8, x: usize, y: usize) stru
             while (y1 != 0) : (y1 -= 1) {
                 if (!is_follow(text2[y1])) break;
             }
+            // XXX if (text2[y1] >= 0x80 and y1 != 0) y1 -= 1;
         }
     } else {
         y1 = y;
@@ -4358,81 +4359,79 @@ test diff {
 
 test "Unicode diffs" {
     const allocator = std.testing.allocator;
-    const this = DiffMatchPatch{};
-    if (XXX) {
-        {
-            var greek_diff = try this.diff(
-                allocator,
-                "αβγ",
-                "αβδ",
-                false,
-            );
-            defer deinitDiffList(allocator, &greek_diff);
-            try testing.expectEqualDeep(@as([]const Diff, &.{
-                Diff.init(.equal, "αβ"),
-                Diff.init(.delete, "γ"),
-                Diff.init(.insert, "δ"),
-            }), greek_diff.items);
-        }
-        {
-            // ө is 0xd3, 0xa9, թ is 0xd6, 0xa9
-            var prefix_diff = try this.diff(
-                allocator,
-                "abө",
-                "abթ",
-                false,
-            );
-            defer deinitDiffList(allocator, &prefix_diff);
-            try testing.expectEqualDeep(@as([]const Diff, &.{
-                Diff.init(.equal, "ab"),
-                Diff.init(.delete, "ө"),
-                Diff.init(.insert, "թ"),
-            }), prefix_diff.items);
-        }
-        {
-            var mid_diff = try this.diff(
-                allocator,
-                "αөβ",
-                "αթβ",
-                false,
-            );
-            defer deinitDiffList(allocator, &mid_diff);
-            try testing.expectEqualDeep(@as([]const Diff, &.{
-                Diff.init(.equal, "α"),
-                Diff.init(.delete, "ө"),
-                Diff.init(.insert, "թ"),
-                Diff.init(.equal, "β"),
-            }), mid_diff.items);
-        }
-        {
-            var mid_prefix = try this.diff(
-                allocator,
-                "αβλ",
-                "αδλ",
-                false,
-            );
-            defer deinitDiffList(allocator, &mid_prefix);
-            try testing.expectEqualDeep(@as([]const Diff, &.{
-                Diff.init(.equal, "α"),
-                Diff.init(.delete, "β"),
-                Diff.init(.insert, "δ"),
-                Diff.init(.equal, "λ"),
-            }), mid_prefix.items);
-        }
-
-        var three_prefix = try this.diff(
+    const dmp = DiffMatchPatch{};
+    {
+        var greek_diff = try dmp.diff(
             allocator,
-            "三亥两",
-            "三亥临",
+            "αβγ",
+            "αβδ",
             false,
         );
-        defer deinitDiffList(allocator, &three_prefix);
+        defer deinitDiffList(allocator, &greek_diff);
         try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "三亥"),
-            Diff.init(.delete, "两"),
-            Diff.init(.insert, "临"),
-        }), three_prefix.items);
+            Diff.init(.equal, "αβ"),
+            Diff.init(.delete, "γ"),
+            Diff.init(.insert, "δ"),
+        }), greek_diff.items);
     }
+    {
+        // ө is 0xd3, 0xa9, թ is 0xd6, 0xa9
+        var prefix_diff = try dmp.diff(
+            allocator,
+            "abө",
+            "abթ",
+            false,
+        );
+        defer deinitDiffList(allocator, &prefix_diff);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "ab"),
+            Diff.init(.delete, "ө"),
+            Diff.init(.insert, "թ"),
+        }), prefix_diff.items);
+    }
+    {
+        var mid_diff = try dmp.diff(
+            allocator,
+            "αөβ",
+            "αթβ",
+            false,
+        );
+        defer deinitDiffList(allocator, &mid_diff);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "α"),
+            Diff.init(.delete, "ө"),
+            Diff.init(.insert, "թ"),
+            Diff.init(.equal, "β"),
+        }), mid_diff.items);
+    }
+    {
+        var mid_prefix = try dmp.diff(
+            allocator,
+            "αβλ",
+            "αδλ",
+            false,
+        );
+        defer deinitDiffList(allocator, &mid_prefix);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "α"),
+            Diff.init(.delete, "β"),
+            Diff.init(.insert, "δ"),
+            Diff.init(.equal, "λ"),
+        }), mid_prefix.items);
+    }
+
+    var three_prefix = try dmp.diff(
+        allocator,
+        "三亥两",
+        "三亥临",
+        false,
+    );
+    defer deinitDiffList(allocator, &three_prefix);
+    try testing.expectEqualDeep(@as([]const Diff, &.{
+        Diff.init(.equal, "三亥"),
+        Diff.init(.delete, "两"),
+        Diff.init(.insert, "临"),
+    }), three_prefix.items);
 }
 
 test "workshop" {
@@ -4440,21 +4439,22 @@ test "workshop" {
     var dmp = DiffMatchPatch{};
     dmp.diff_timeout = 0;
     {
-        var diffs = try dmp.diff(
+        var mid_prefix = try dmp.diff(
             allocator,
-            "三亥两",
-            "三亥临",
+            "αβλ",
+            "αδλ",
             false,
         );
-        for (diffs.items) |d| {
-            std.debug.print("{}\n", .{d});
+        defer deinitDiffList(allocator, &mid_prefix);
+        for (mid_prefix.items) |d| {
+            std.debug.print("{}", .{d});
         }
-        defer deinitDiffList(allocator, &diffs);
         try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "三亥"),
-            Diff.init(.delete, "两"),
-            Diff.init(.insert, "临"),
-        }), diffs.items);
+            Diff.init(.equal, "α"),
+            Diff.init(.delete, "β"),
+            Diff.init(.insert, "δ"),
+            Diff.init(.equal, "λ"),
+        }), mid_prefix.items);
     }
 }
 
