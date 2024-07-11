@@ -348,7 +348,7 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
                     assert(b == after[after.len - i]);
                     // TODO why are ASCII and lead bytes different here?
                     // empirically they are.
-                    if (b > 0xc0) return i;
+                    if (b > 0xc0) return i; // 0xc0 and 0xc1 are illegal
                 } // Either at one, or no more follow bytes:
                 return i - 1;
             } else {
@@ -4375,10 +4375,10 @@ fn diffRoundTrip(allocator: Allocator, dmp: DiffMatchPatch, diff_slice: []const 
     }
     const text_before = try diffBeforeText(allocator, diffs_before);
     defer allocator.free(text_before);
-    std.debug.print("before: {s}\n", .{text_before});
+    // XXX std.debug.print("before: {s}\n", .{text_before});
     const text_after = try diffAfterText(allocator, diffs_before);
     defer allocator.free(text_after);
-    std.debug.print("after: {s}\n", .{text_after});
+    // XXX std.debug.print("after: {s}\n", .{text_after});
     var diffs_after = try dmp.diff(allocator, text_before, text_after, false);
     defer deinitDiffList(allocator, &diffs_after);
     // Should change nothing:
@@ -4502,12 +4502,6 @@ test "Unicode diffs" {
             },
         );
     }
-}
-
-test "workshop" {
-    const allocator = std.testing.allocator;
-    var dmp = DiffMatchPatch{};
-    dmp.diff_timeout = 0;
     { // "三乤亥" Three-byte, one middle difference in middle
         try testing.checkAllAllocationFailures(
             allocator,
@@ -4518,6 +4512,78 @@ test "workshop" {
                     .{ .operation = .delete, .text = "两" },
                     .{ .operation = .insert, .text = "乤" },
                     .{ .operation = .equal, .text = "亥" },
+                },
+            },
+        );
+    }
+    { // "三临亥" Three-byte, one suffix difference in middle
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三" },
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "临" },
+                    .{ .operation = .equal, .text = "亥" },
+                },
+            },
+        );
+    }
+    { // "临三亥" Three-byte, one suffix difference in prefix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "临" },
+                    .{ .operation = .equal, .text = "三亥" },
+                },
+            },
+        );
+    }
+    { // "乤三亥" Three-byte, one middle difference in prefix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "乤" },
+                    .{ .operation = .equal, .text = "三亥" },
+                },
+            },
+        );
+    }
+    { // "乤三亥" Three-byte, one prefix difference in prefix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "帤" },
+                    .{ .operation = .equal, .text = "三亥" },
+                },
+            },
+        );
+    }
+}
+
+test "workshop" {
+    const allocator = std.testing.allocator;
+    var dmp = DiffMatchPatch{};
+    dmp.diff_timeout = 0;
+    { // "乤三亥" Three-byte, one middle difference in prefix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "帤" },
+                    .{ .operation = .equal, .text = "三亥" },
                 },
             },
         );
