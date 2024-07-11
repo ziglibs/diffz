@@ -705,10 +705,9 @@ fn diffBisect(
             }
             var y1 = x1 - k1;
             while (x1 < before_length and y1 < after_length) {
-                const match, const d1 = equalForward(before, after, x1, y1);
-                if (match) {
-                    x1 += d1;
-                    y1 += d1;
+                if (before[@intCast(x1)] == after[@intCast(y1)]) {
+                    x1 += 1;
+                    y1 += 1;
                 } else {
                     break;
                 }
@@ -747,15 +746,9 @@ fn diffBisect(
             }
             var y2: isize = x2 - k2;
             while (x2 < before_length and y2 < after_length) {
-                const match, const d1 = equalBackward(
-                    before,
-                    after,
-                    before_length - x2 - 1,
-                    after_length - y2 - 1,
-                );
-                if (match) {
-                    x2 += d1;
-                    y2 += d1;
+                if (before[@intCast(before_length - x2 - 1)] == after[@intCast(after_length - y2 - 1)]) {
+                    x2 += 1;
+                    y2 += 1;
                 } else {
                     break;
                 }
@@ -796,111 +789,6 @@ fn diffBisect(
         try allocator.dupe(u8, after),
     ));
     return diffs;
-}
-
-/// Match up to a full character in the forward direction.  Note the
-/// goal here: we aren't validating Unicode, we're making sure we don't
-/// split code unit sequences.  We might get non-minimal diffs on bad
-/// UTF-8, but that's fine.
-fn equalForward(
-    before: []const u8,
-    after: []const u8,
-    b_i: isize,
-    a_i: isize,
-) struct { bool, isize } {
-    const b_u: usize = @intCast(b_i);
-    const a_u: usize = @intCast(a_i);
-    const b1c = before[b_u];
-    const a1c = after[a_u];
-    if (b1c == a1c) {
-        // how many codeunits might we expect?
-        // ASCII is easy:
-        if (b1c < 0x80) {
-            return .{ true, 1 };
-        } else {
-            switch (b1c) {
-                0xc2...0xdf => {
-                    // two bytes
-                    if (b_u + 1 >= before.len or a_u + 1 >= after.len) {
-                        // it's a match ¯\_(ツ)_/¯
-                        return .{ true, 1 };
-                    } // length is unused for false results
-                    return .{ before[b_u + 1] == after[a_u + 1], 2 };
-                },
-                0xe0...0xef => {
-                    // three bytes
-                    if (b_u + 2 >= before.len or a_u + 2 >= after.len) {
-                        return .{ true, 1 };
-                    }
-                    const m2 = before[b_u + 1] == after[a_u + 1];
-                    const m3 = before[b_u + 2] == after[a_u + 2];
-                    return .{ m2 and m3, 3 };
-                },
-                0xf0...0xf4 => {
-                    // four bytes
-                    if (b_u + 3 >= before.len or a_u + 3 >= after.len) {
-                        return .{ true, 1 };
-                    }
-                    const m = same: {
-                        const m2 = before[b_u + 1] == after[a_u + 1];
-                        const m3 = before[b_u + 2] == after[a_u + 2];
-                        const m4 = before[b_u + 3] == after[a_u + 3];
-                        break :same m2 and m3 and m4;
-                    };
-                    return .{ m, 4 };
-                }, // follow byte or invalid high, doesn't matter, match
-                else => return .{ true, 1 },
-            }
-        }
-    } else {
-        return .{ false, 0 };
-    }
-}
-
-/// Match characters backward, avoiding splitting two valid codeunits with a
-/// common suffix.  Once again, we are not interested in validating the text,
-/// just in preventing a spurious diff which truncates Unicode.
-fn equalBackward(
-    before: []const u8,
-    after: []const u8,
-    b_i: isize,
-    a_i: isize,
-) struct { bool, isize } {
-    const b_u: usize = @intCast(b_i);
-    const a_u: usize = @intCast(a_i);
-    const b1c = before[b_u];
-    const a1c = after[a_u];
-    if (b1c == a1c) {
-        // how many codeunits might we expect?
-        // different jam here! We have to match back to a lead:
-        switch (b1c) {
-            // follow byte might be a code unit sequence
-            0x80...0xbf => {
-                // I'd rather double the offsets then deal with
-                // casting.  Feel free to optimize...
-                var off: usize = 1;
-                var offi: isize = @intCast(off);
-                while (off < 4 and b_i - offi >= 0 and a_i - offi >= 0) {
-                    const b = before[b_u - off];
-                    if (b != after[b_u - off]) {
-                        // whole thing is a fail
-                        return .{ false, 0 }; // here the offset doesn't matter
-                    }
-                    // check for lead byte
-                    // since we presume well-formedness, any lead will do
-                    if (0xc1 < b and b < 0xf5) {
-                        return .{ true, offi + 1 };
-                    }
-                    off += 1;
-                    offi += 1;
-                } // since we didn't spot a plausible character, match 1
-                return .{ true, 1 };
-            }, // ASCII, malformed, don't care,
-            else => return .{ true, 1 },
-        }
-    } else {
-        return .{ false, 0 };
-    }
 }
 
 /// Given the location of the 'middle snake', split the diff in two parts
