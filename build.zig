@@ -21,18 +21,27 @@ pub fn build(b: *std.Build) void {
 
     b.step("test", "Run diffz tests").dependOn(&step_tests.step);
 
-    // Adds a step to generate code coverage
-    const cov_step = b.step("cov", "Generate coverage (kcov must be installed)");
+    const addOutputDirectoryArg = comptime if (@import("builtin").zig_version.order(.{ .major = 0, .minor = 13, .patch = 0 }) == .lt)
+        std.Build.Step.Run.addOutputFileArg
+    else
+        std.Build.Step.Run.addOutputDirectoryArg;
 
-    const cov_run = b.addSystemCommand(&.{
+    const run_kcov = b.addSystemCommand(&.{
         "kcov",
         "--clean",
-        "--include-pattern=DiffMatchPatch.zig",
         "--exclude-line=unreachable,expect(false)",
-        "kcov-output",
     });
-    cov_run.addArtifactArg(tests);
-    cov_step.dependOn(&cov_run.step);
-    _ = cov_run.captureStdOut();
-    _ = cov_run.captureStdErr();
+    run_kcov.addPrefixedDirectoryArg("--include-pattern=", b.path("."));
+    const coverage_output = addOutputDirectoryArg(run_kcov, ".");
+    run_kcov.addArtifactArg(tests);
+    run_kcov.enableTestRunnerMode();
+
+    const install_coverage = b.addInstallDirectory(.{
+        .source_dir = coverage_output,
+        .install_dir = .{ .custom = "coverage" },
+        .install_subdir = "",
+    });
+
+    const coverage_step = b.step("coverage", "Generate coverage (kcov must be installed)");
+    coverage_step.dependOn(&install_coverage.step);
 }
