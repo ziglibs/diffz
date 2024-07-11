@@ -2340,9 +2340,8 @@ fn patchAddContext(
     const prefix = pre: {
         var pre_start = if (padding > patch.start2) 0 else patch.start2 - padding;
         // Make sure we're not breaking a codepoint.
-        while (is_follow(text[pre_start]) and pre_start > 0) {
-            pre_start -= 1;
-        } // Assuming we did everything else right, pre_end should be
+        while (is_follow(text[pre_start]) and pre_start > 0) : (pre_start -= 1) {}
+        // Assuming we did everything else right, pre_end should be
         // properly placed.
         break :pre text[pre_start..patch.start2];
     };
@@ -2358,14 +2357,7 @@ fn patchAddContext(
         const post_start = patch.start2 + patch.length1;
         var post_end = @min(text.len, patch.start2 + patch.length1 + padding);
         // Prevent broken codepoints here as well: Lead bytes, or follow with another follow
-        while (post_end + 1 < text.len and !std.ascii.isASCII(text[post_end]) and is_follow(text[post_end + 1])) {
-            post_end += 1;
-            // Special case: penultimate with another follow at end
-            if (post_end + 2 == text.len and is_follow(text[post_end + 1])) {
-                post_end += 1;
-                break; // Not actually necessary, but polite.
-            }
-        }
+        while (post_end < text.len and is_follow(text[post_end])) : (post_end += 1) {}
         post_end = @min(post_end, text.len);
         break :post text[post_start..post_end];
     };
