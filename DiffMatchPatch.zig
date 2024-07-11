@@ -311,17 +311,14 @@ fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
 
 /// Find a common suffix which respects UTF-8 code point boundaries
 fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
-    // TODO I don't like the was_follow idiom, I think it's ok to
-    // just check for non-ascii so we don't need an extra test in
-    // a hot loop.
     const n = @min(before.len, after.len);
     var i: usize = 1;
-    var was_follow = false;
     while (i <= n) : (i += 1) {
         var b = before[before.len - i];
         const a = after[after.len - i];
         if (a != b) {
-            if (was_follow) {
+            if (i == 1) return 0;
+            if (is_follow(before[before.len - i + 1])) {
                 // Means we're at at least 2:
                 assert(i > 1);
                 // We just saw an identical follow byte, so we back
@@ -341,8 +338,6 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
             } else {
                 return i - 1;
             }
-        } else {
-            was_follow = is_follow(b); // no need to check twice
         }
     }
 
