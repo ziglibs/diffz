@@ -324,6 +324,9 @@ fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
 
 /// Find a common suffix which respects UTF-8 code point boundaries
 fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
+    // TODO I don't like the was_follow idiom, I think it's ok to
+    // just check for non-ascii so we don't need an extra test in
+    // a hot loop.
     const n = @min(before.len, after.len);
     var i: usize = 1;
     var was_follow = false;
@@ -343,6 +346,9 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
                     i -= 1;
                     b = before[before.len - i];
                     assert(b == after[after.len - i]);
+                    // TODO why are ASCII and lead bytes different here?
+                    // empirically they are.
+                    if (b > 0xc0) return i;
                 } // Either at one, or no more follow bytes:
                 return i - 1;
             } else {
@@ -4369,10 +4375,10 @@ fn diffRoundTrip(allocator: Allocator, dmp: DiffMatchPatch, diff_slice: []const 
     }
     const text_before = try diffBeforeText(allocator, diffs_before);
     defer allocator.free(text_before);
-    // XXX std.debug.print("before: {s}\n", .{text_before});
+    std.debug.print("before: {s}\n", .{text_before});
     const text_after = try diffAfterText(allocator, diffs_before);
     defer allocator.free(text_after);
-    // XXX std.debug.print("after: {s}\n", .{text_after});
+    std.debug.print("after: {s}\n", .{text_after});
     var diffs_after = try dmp.diff(allocator, text_before, text_after, false);
     defer deinitDiffList(allocator, &diffs_after);
     // Should change nothing:
