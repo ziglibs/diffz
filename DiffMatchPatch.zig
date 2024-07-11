@@ -819,7 +819,8 @@ fn diffBisectSplit(
     y: isize,
     deadline: u64,
 ) DiffError!DiffList {
-    const x1, const y1 = fixupBisection(text1, text2, @intCast(x), @intCast(y));
+    const x1 = fixSplitForward(text1, @intCast(x));
+    const y1 = fixSplitBackward(text2, @intCast(y));
     const text1a = text1[0..x1];
     const text2a = text2[0..y1];
     const text1b = text1[x1..];
@@ -840,32 +841,16 @@ fn diffBisectSplit(
     return diffs;
 }
 
-/// Fix Unicode clipping problems with bisection points.
-/// Moves text1 forward and text2 backward, in case they split on the same point.
-fn fixupBisection(text1: []const u8, text2: []const u8, x: usize, y: usize) struct { usize, usize } {
-    var x1: usize = undefined;
-    var y1: usize = undefined;
-    if (x < text1.len and is_follow(text1[x])) {
-        x1 = x + 1;
-        if (x1 != text1.len) {
-            while (x1 < text1.len) : (x1 += 1) {
-                if (!is_follow(text1[x1])) break;
-            }
-        }
-    } else {
-        x1 = x;
-    }
-    if (y < text2.len and is_follow(text2[y])) {
-        y1 = y - 1;
-        if (y1 != 0) {
-            while (y1 != 0) : (y1 -= 1) {
-                if (!is_follow(text2[y1])) break;
-            }
-        }
-    } else {
-        y1 = y;
-    }
-    return .{ x1, y1 };
+inline fn fixSplitForward(text: []const u8, i: usize) usize {
+    var idx = i;
+    while (idx < text.len and is_follow(text[idx])) : (idx += 1) {}
+    return idx;
+}
+
+inline fn fixSplitBackward(text: []const u8, i: usize) usize {
+    var idx = i;
+    if (idx < text.len) while (idx != 0 and is_follow(text[idx])) : (idx -= 1) {};
+    return idx;
 }
 
 /// Do a quick line-level diff on both strings, then rediff the parts for
@@ -4653,6 +4638,14 @@ test "Unicode diffs" {
     }
 }
 
+test "Diff format" {
+    const a_diff = Diff{ .operation = .insert, .text = "add me" };
+    const expect = "(+, \"add me\")";
+    var out_buf: [13]u8 = undefined;
+    const out_string = try std.fmt.bufPrint(&out_buf, "{}", .{a_diff});
+    try testing.expectEqualStrings(expect, out_string);
+}
+
 fn testDiffCleanupSemantic(
     allocator: std.mem.Allocator,
     params: struct {
@@ -5507,7 +5500,22 @@ test "testPatchAddContext" {
             "@@ -1,27 +1,28 @@\n Th\n-e\n+at\n  quick brown fox jumps. \n",
         },
     );
-    // TODO: This will need some patches which check the Unicode handling.
+    // Unicode
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        testPatchAddContext,
+        .{
+            dmp,
+            "@@ -9,6 +10,3 @@\n-remove\n+add\n",
+            "⊗⊘⊙remove⊙⊘⊗",
+            \\@@ -3,18 +4,15 @@
+            \\ %E2%8A%98%E2%8A%99
+            \\-remove
+            \\+add
+            \\ %E2%8A%99%E2%8A%98
+            \\
+        },
+    );
 }
 
 fn testMakePatch(allocator: Allocator) !void {
