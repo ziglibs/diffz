@@ -299,23 +299,10 @@ fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
     const n = @min(before.len, after.len);
     var i: usize = 0;
     while (i < n) : (i += 1) {
-        var b = before[i];
+        const b = before[i];
         const a = after[i];
         if (a != b) {
-            if (is_follow(a) and is_follow(b)) {
-                // We've clipped a codepoint, back out
-                if (i == 0) return i; // Malformed UTF-8 is always possible
-                i -= 1;
-                while (i != 0) : (i -= 1) {
-                    b = before[i];
-                    assert(b == after[i]);
-                    if (!is_follow(b)) break;
-                }
-                // Now we're either at zero, or at the lead,
-                return i;
-            } else {
-                return i;
-            }
+            return fixSplitBackward(before, i);
         }
     }
 
