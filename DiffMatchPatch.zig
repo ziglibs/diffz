@@ -4361,9 +4361,29 @@ test diff {
     }
 }
 
+fn diffRoundTrip(allocator: Allocator, dmp: DiffMatchPatch, diff_slice: []const Diff) !void {
+    var diffs_before = try DiffList.initCapacity(allocator, diff_slice.len);
+    defer deinitDiffList(allocator, &diffs_before);
+    for (diff_slice) |item| {
+        diffs_before.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+    }
+    const text_before = try diffBeforeText(allocator, diffs_before);
+    defer allocator.free(text_before);
+    // XXX std.debug.print("before: {s}\n", .{text_before});
+    const text_after = try diffAfterText(allocator, diffs_before);
+    defer allocator.free(text_after);
+    // XXX std.debug.print("after: {s}\n", .{text_after});
+    var diffs_after = try dmp.diff(allocator, text_before, text_after, false);
+    defer deinitDiffList(allocator, &diffs_after);
+    // Should change nothing:
+    try diffCleanupSemantic(allocator, &diffs_after);
+    try testing.expectEqualDeep(diffs_before.items, diffs_after.items);
+}
+
 test "Unicode diffs" {
     const allocator = std.testing.allocator;
-    const dmp = DiffMatchPatch{};
+    var dmp = DiffMatchPatch{};
+    dmp.diff_timeout = 0;
     {
         var greek_diff = try dmp.diff(
             allocator,
@@ -4423,26 +4443,79 @@ test "Unicode diffs" {
             Diff.init(.equal, "λ"),
         }), mid_prefix.items);
     }
-
-    var three_prefix = try dmp.diff(
-        allocator,
-        "三亥两",
-        "三亥临",
-        false,
-    );
-    defer deinitDiffList(allocator, &three_prefix);
-    try testing.expectEqualDeep(@as([]const Diff, &.{
-        Diff.init(.equal, "三亥"),
-        Diff.init(.delete, "两"),
-        Diff.init(.insert, "临"),
-    }), three_prefix.items);
+    { // "三亥临" Three-byte, one different suffix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三亥" },
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "临" },
+                },
+            },
+        );
+    }
+    { // "三亥乤" Three-byte, one middle difference in suffix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三亥" },
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "乤" },
+                },
+            },
+        );
+    }
+    { // "三亥帤" Three-byte, one prefix difference in suffix
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三亥" },
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "帤" },
+                },
+            },
+        );
+    }
+    { // "三帤亥" Three-byte, one prefix difference in middle
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三" },
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "帤" },
+                    .{ .operation = .equal, .text = "亥" },
+                },
+            },
+        );
+    }
 }
 
 test "workshop" {
     const allocator = std.testing.allocator;
-    _ = allocator; // autofix
     var dmp = DiffMatchPatch{};
     dmp.diff_timeout = 0;
+    { // "三乤亥" Three-byte, one middle difference in middle
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三" },
+                    .{ .operation = .delete, .text = "两" },
+                    .{ .operation = .insert, .text = "乤" },
+                    .{ .operation = .equal, .text = "亥" },
+                },
+            },
+        );
+    }
 }
 
 fn testDiffCleanupSemantic(
