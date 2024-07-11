@@ -1699,7 +1699,16 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     // This would mean a truncation: lead or follow, followed by a follow
     // which differs (or it would be included in our overlap).
     // TODO this currently appears to be dead code, keep an eye on that.
+    // Reasoning: we're looking for a suffix which matches a prefix, and
+    // we've already assured that edits end with a follow byte, and begin
+    // with a lead byte, ASCII being both for our purposes.  So a split
+    // should not be possible.
+    // I'm going to add a panic just so I know if test cases of any sort
+    // trigger this code path.
     if (text2[best_idx] >= 0x80 and is_follow(text2[best_idx + 1])) {
+        if (true) {
+            @panic("Your assumption regarding diffCommonOverlap is invalid!");
+        }
         // back out
         assert(best_idx == best);
         if (!is_follow(text2[best])) {
@@ -4376,10 +4385,8 @@ fn diffRoundTrip(allocator: Allocator, dmp: DiffMatchPatch, diff_slice: []const 
     }
     const text_before = try diffBeforeText(allocator, diffs_before);
     defer allocator.free(text_before);
-    // XXX std.debug.print("before: {s}\n", .{text_before});
     const text_after = try diffAfterText(allocator, diffs_before);
     defer allocator.free(text_after);
-    // XXX std.debug.print("after: {s}\n", .{text_after});
     var diffs_after = try dmp.diff(allocator, text_before, text_after, false);
     defer deinitDiffList(allocator, &diffs_after);
     // Should change nothing:
@@ -4584,22 +4591,72 @@ test "Unicode diffs" {
             },
         );
     }
-}
-
-test "workshop" {
-    const allocator = std.testing.allocator;
-    var dmp = DiffMatchPatch{};
-    dmp.diff_timeout = 0;
-    { // "三临亥" → "三丿亥" Three-byte, one suffix difference
+    { // Four-byte permutation #1
         try testing.checkAllAllocationFailures(
             allocator,
             diffRoundTrip,
             .{
                 dmp, &.{
-                    .{ .operation = .equal, .text = "三" },
-                    .{ .operation = .delete, .text = "临" },
+                    .{ .operation = .equal, .text = "😹💋" },
+                    .{ .operation = .delete, .text = "\xf0\x9f\xa5\xb9" },
                     .{ .operation = .insert, .text = "丿" },
-                    .{ .operation = .equal, .text = "亥" },
+                    .{ .operation = .equal, .text = "👀🫵" },
+                },
+            },
+        );
+    }
+    { // Four-byte permutation #1
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "😹💋" },
+                    .{ .operation = .delete, .text = "\xf0\x9f\xa5\xb9" },
+                    .{ .operation = .insert, .text = "\xf1\x9f\xa5\xb9" },
+                    .{ .operation = .equal, .text = "👀🫵" },
+                },
+            },
+        );
+    }
+    { // Four-byte permutation #2
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "😹💋" },
+                    .{ .operation = .delete, .text = "\xf0\x9f\xa5\xb9" },
+                    .{ .operation = .insert, .text = "\xf0\xa0\xa5\xb9" },
+                    .{ .operation = .equal, .text = "👀🫵" },
+                },
+            },
+        );
+    }
+    { // Four-byte permutation #3
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "😹💋" },
+                    .{ .operation = .delete, .text = "\xf0\x9f\xa5\xb9" },
+                    .{ .operation = .insert, .text = "\xf0\x9f\xa4\xb9" },
+                    .{ .operation = .equal, .text = "👀🫵" },
+                },
+            },
+        );
+    }
+    { // Four-byte permutation #4
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "😹💋" },
+                    .{ .operation = .delete, .text = "\xf0\x9f\xa5\xb9" },
+                    .{ .operation = .insert, .text = "\xf0\x9f\xa5\xb4" },
+                    .{ .operation = .equal, .text = "👀🫵" },
                 },
             },
         );
