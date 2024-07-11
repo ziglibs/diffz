@@ -1697,7 +1697,8 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     };
     if (best_idx == 0) return best_idx;
     // This would mean a truncation: lead or follow, followed by a follow
-    // which differs (or it would be included in our overlap)
+    // which differs (or it would be included in our overlap).
+    // TODO this currently appears to be dead code, keep an eye on that.
     if (text2[best_idx] >= 0x80 and is_follow(text2[best_idx + 1])) {
         // back out
         assert(best_idx == best);
@@ -4569,21 +4570,36 @@ test "Unicode diffs" {
             },
         );
     }
+    { // "三临亥" → "三丿亥" Three-byte, one suffix difference
+        try testing.checkAllAllocationFailures(
+            allocator,
+            diffRoundTrip,
+            .{
+                dmp, &.{
+                    .{ .operation = .equal, .text = "三" },
+                    .{ .operation = .delete, .text = "临" },
+                    .{ .operation = .insert, .text = "丿" },
+                    .{ .operation = .equal, .text = "亥" },
+                },
+            },
+        );
+    }
 }
 
 test "workshop" {
     const allocator = std.testing.allocator;
     var dmp = DiffMatchPatch{};
     dmp.diff_timeout = 0;
-    { // "乤三亥" Three-byte, one middle difference in prefix
+    { // "三临亥" → "三丿亥" Three-byte, one suffix difference
         try testing.checkAllAllocationFailures(
             allocator,
             diffRoundTrip,
             .{
                 dmp, &.{
-                    .{ .operation = .delete, .text = "两" },
-                    .{ .operation = .insert, .text = "帤" },
-                    .{ .operation = .equal, .text = "三亥" },
+                    .{ .operation = .equal, .text = "三" },
+                    .{ .operation = .delete, .text = "临" },
+                    .{ .operation = .insert, .text = "丿" },
+                    .{ .operation = .equal, .text = "亥" },
                 },
             },
         );
