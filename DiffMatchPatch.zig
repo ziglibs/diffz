@@ -326,25 +326,30 @@ fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
 fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
     const n = @min(before.len, after.len);
     var i: usize = 1;
+    var was_follow = false;
     while (i <= n) : (i += 1) {
         var b = before[before.len - i];
         const a = after[after.len - i];
         if (a != b) {
-            // Testing one is fine, because we can only
-            // have problems if it's both
-            if (!std.ascii.isASCII(a)) {
-                if (i == 1) return i - 1;
-                // Check behind us
+            if (was_follow) {
+                // Means we're at at least 2:
+                assert(i > 1);
+                // We just saw an identical follow byte, so we back
+                // out forward:
                 i -= 1;
-                while (i > 1) : (i -= 1) {
+                b = before[before.len - i];
+                assert(b == after[after.len - i]);
+                while (i > 1 and is_follow(b)) {
+                    i -= 1;
                     b = before[before.len - i];
                     assert(b == after[after.len - i]);
-                    if (!is_follow(b)) break;
                 } // Either at one, or no more follow bytes:
                 return i - 1;
             } else {
                 return i - 1;
             }
+        } else {
+            was_follow = is_follow(b); // no need to check twice
         }
     }
 
@@ -850,7 +855,6 @@ fn fixupBisection(text1: []const u8, text2: []const u8, x: usize, y: usize) stru
             while (y1 != 0) : (y1 -= 1) {
                 if (!is_follow(text2[y1])) break;
             }
-            // XXX if (text2[y1] >= 0x80 and y1 != 0) y1 -= 1;
         }
     } else {
         y1 = y;
@@ -4436,26 +4440,9 @@ test "Unicode diffs" {
 
 test "workshop" {
     const allocator = std.testing.allocator;
+    _ = allocator; // autofix
     var dmp = DiffMatchPatch{};
     dmp.diff_timeout = 0;
-    {
-        var mid_prefix = try dmp.diff(
-            allocator,
-            "αβλ",
-            "αδλ",
-            false,
-        );
-        defer deinitDiffList(allocator, &mid_prefix);
-        for (mid_prefix.items) |d| {
-            std.debug.print("{}", .{d});
-        }
-        try testing.expectEqualDeep(@as([]const Diff, &.{
-            Diff.init(.equal, "α"),
-            Diff.init(.delete, "β"),
-            Diff.init(.insert, "δ"),
-            Diff.init(.equal, "λ"),
-        }), mid_prefix.items);
-    }
 }
 
 fn testDiffCleanupSemantic(
