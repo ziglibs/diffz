@@ -285,7 +285,6 @@ fn diffInternal(
             try allocator.dupe(u8, common_suffix),
         ));
     }
-
     try diffCleanupMerge(allocator, &diffs);
     return diffs;
 }
@@ -307,15 +306,12 @@ fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
                 // We've clipped a codepoint, back out
                 if (i == 0) return i; // Malformed UTF-8 is always possible
                 i -= 1;
-                // We'll track `before` since they must be the same:
-                b = before[i];
-                assert(b == after[i]);
-                while (i != 0 and is_follow(b)) {
-                    i -= 1;
+                while (i != 0) : (i -= 1) {
                     b = before[i];
                     assert(b == after[i]);
+                    if (!is_follow(b)) break;
                 }
-                // Now we're either at zero, or at the lead:
+                // Now we're either at zero, or at the lead,
                 return i;
             } else {
                 return i;
@@ -330,19 +326,19 @@ fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
 fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
     const n = @min(before.len, after.len);
     var i: usize = 1;
-    var was_follow = false;
     while (i <= n) : (i += 1) {
         var b = before[before.len - i];
         const a = after[after.len - i];
         if (a != b) {
-            if (was_follow) {
-                // Means we're at at least 2:
-                assert(i > 1);
-                // We just saw an identical follow byte, so we back
-                // out forward:
+            // Testing one is fine, because we can only
+            // have problems if it's both
+            if (!std.ascii.isASCII(a)) {
+                if (i == 1) return i - 1;
+                // Check behind us
                 i -= 1;
                 b = before[before.len - i];
                 assert(b == after[after.len - i]);
+                if (!is_follow(b)) return i;
                 while (i > 1 and is_follow(b)) {
                     i -= 1;
                     b = before[before.len - i];
@@ -352,8 +348,6 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
             } else {
                 return i - 1;
             }
-        } else {
-            was_follow = is_follow(b); // no need to check twice
         }
     }
 
@@ -1261,7 +1255,6 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
     if (diffs.items[diffs.items.len - 1].text.len == 0) {
         diffs.items.len -= 1;
     }
-
     // Second pass: look for single edits surrounded on both sides by
     // equalities which can be shifted sideways to eliminate an equality.
     // e.g: A<ins>BA</ins>C -> <ins>AB</ins>AC
@@ -4511,7 +4504,7 @@ test "Unicode diffs" {
             Diff.init(.equal, "λ"),
         }), mid_prefix.items);
     }
-    {
+    if (false) {
         var three_prefix = try this.diff(
             allocator,
             "三亥两",
@@ -4524,6 +4517,28 @@ test "Unicode diffs" {
             Diff.init(.delete, "两"),
             Diff.init(.insert, "临"),
         }), three_prefix.items);
+    }
+}
+
+test "workshop" {
+    const allocator = std.testing.allocator;
+    const this = DiffMatchPatch{};
+    {
+        var diffs = try this.diff(
+            allocator,
+            "三亥两",
+            "三亥临",
+            false,
+        );
+        for (diffs.items) |d| {
+            std.debug.print("{}\n", .{d});
+        }
+        defer deinitDiffList(allocator, &diffs);
+        try testing.expectEqualDeep(@as([]const Diff, &.{
+            Diff.init(.equal, "三亥"),
+            Diff.init(.delete, "两"),
+            Diff.init(.insert, "临"),
+        }), diffs.items);
     }
 }
 
@@ -5617,6 +5632,7 @@ test "testPatchApply" {
     dmp.match_distance = 1000;
     dmp.match_threshold = 0.5;
     dmp.patch_delete_threshold = 0.5;
+    dmp.match_max_bits = 32; // Necessary to get the correct legacy behavior
     // Null case.
     try testing.checkAllAllocationFailures(
         testing.allocator,
