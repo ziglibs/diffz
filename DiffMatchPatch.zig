@@ -1550,11 +1550,8 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     return 0;
 }
 
-inline fn boolInt(b: bool) usize {
-    if (b)
-        return 1
-    else
-        return 0;
+inline fn boolInt(b: bool) u8 {
+    return @intFromBool(b);
 }
 
 /// Reduce the number of edits by eliminating operationally trivial
