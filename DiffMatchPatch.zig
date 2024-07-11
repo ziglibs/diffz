@@ -4377,6 +4377,7 @@ test diff {
     }
 }
 
+/// Round-trip a diff, confirming that the result matches the original.
 fn diffRoundTrip(allocator: Allocator, dmp: DiffMatchPatch, diff_slice: []const Diff) !void {
     var diffs_before = try DiffList.initCapacity(allocator, diff_slice.len);
     defer deinitDiffList(allocator, &diffs_before);
