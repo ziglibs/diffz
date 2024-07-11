@@ -314,30 +314,11 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
     const n = @min(before.len, after.len);
     var i: usize = 1;
     while (i <= n) : (i += 1) {
-        var b = before[before.len - i];
+        const b = before[before.len - i];
         const a = after[after.len - i];
         if (a != b) {
             if (i == 1) return 0;
-            if (is_follow(before[before.len - i + 1])) {
-                // Means we're at at least 2:
-                assert(i > 1);
-                // We just saw an identical follow byte, so we back
-                // out forward:
-                i -= 1;
-                b = before[before.len - i];
-                assert(b == after[after.len - i]);
-                while (i > 1 and is_follow(b)) {
-                    i -= 1;
-                    b = before[before.len - i];
-                    assert(b == after[after.len - i]);
-                    // TODO why are ASCII and lead bytes different here?
-                    // empirically they are.
-                    if (b > 0xc0) return i; // 0xc0 and 0xc1 are illegal
-                } // Either at one, or no more follow bytes:
-                return i - 1;
-            } else {
-                return i - 1;
-            }
+            return before.len - fixSplitForward(before, before.len - i + 1);
         }
     }
 
