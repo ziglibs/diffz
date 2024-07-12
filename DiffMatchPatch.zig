@@ -907,8 +907,10 @@ fn diffLineMode(
 const UNICODE_MAX = 0x10ffdf;
 const UNICODE_TWO_THIRDS = 742724;
 const UNICODE_ONE_THIRD = 371355;
+const CHAR_OFFSET = 32;
 comptime {
     assert(UNICODE_TWO_THIRDS + UNICODE_ONE_THIRD == UNICODE_MAX);
+    assert(UNICODE_TWO_THIRDS + UNICODE_ONE_THIRD + CHAR_OFFSET == 0x10ffff);
 }
 /// Split two texts into a list of strings.  Reduce the texts to a string of
 /// hashes where each Unicode character represents one line.
@@ -997,7 +999,7 @@ fn diffIteratorToCharsMunge(
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     var count: usize = 0;
-    var codepoint: u21 = 32 + cast(u21, segment_array.items.len);
+    var codepoint: u21 = CHAR_OFFSET + cast(u21, segment_array.items.len);
     var char_buf: [4]u8 = undefined;
     while (iterator.next()) |line| {
         if (segment_hash.get(line)) |value| {
@@ -1005,7 +1007,7 @@ fn diffIteratorToCharsMunge(
             try chars.appendSlice(allocator, char_buf[0..nbytes]);
             count += line.len;
         } else {
-            if (codepoint - 32 == max_segments) {
+            if (codepoint - CHAR_OFFSET == max_segments) {
                 // Bail out
                 iterator.short_circuit();
                 const final_line = text[count..];
@@ -1044,7 +1046,7 @@ fn diffCharsToLines(
             const cp = std.unicode.wtf8Decode(d.text[cursor..][0..cp_len]) catch {
                 @panic("Internal decode error in diffCharsToLines");
             };
-            try text.appendSlice(allocator, line_array[cp - 32]);
+            try text.appendSlice(allocator, line_array[cp - CHAR_OFFSET]);
             cursor += cp_len;
         }
         allocator.free(d.text);
@@ -3575,7 +3577,7 @@ test diffLinesToChars {
         var char_list = std.ArrayList(u8).init(allocator);
         defer char_list.deinit();
 
-        var i: u21 = 32;
+        var i: u21 = CHAR_OFFSET;
         var char_buf: [4]u8 = undefined;
         while (i < n) : (i += 1) {
             const nbytes = std.unicode.wtf8Encode(i, &char_buf) catch unreachable;
@@ -3584,7 +3586,7 @@ test diffLinesToChars {
             try char_list.appendSlice(char_buf[0..nbytes]);
         }
         const codepoint_len = std.unicode.utf8CountCodepoints(char_list.items) catch unreachable;
-        try testing.expectEqual(@as(usize, n - 32), codepoint_len); // Test initialization fail #2
+        try testing.expectEqual(@as(usize, n - CHAR_OFFSET), codepoint_len); // Test initialization fail #2
         result = try diffLinesToChars(allocator, line_list.items, "");
         defer result.deinit(allocator);
         try testing.expectEqual(char_list.items.len, result.chars_1.len);
