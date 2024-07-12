@@ -597,6 +597,7 @@ fn diffHalfMatchInternal(
         errdefer allocator.free(prefix_after);
         const suffix_after = try allocator.dupe(u8, best_short_text_b);
         const best_common_text = try best_common.toOwnedSlice(allocator);
+        errdefer allocator.free(best_common_text); // Keeps the code portable.
         return .{
             .prefix_before = prefix_before,
             .suffix_before = suffix_before,
@@ -1004,6 +1005,122 @@ fn diffCharsToLines(
         allocator.free(d.text);
         d.text = try text.toOwnedSlice(allocator);
     }
+}
+
+/// Do a quick line-level diff on both strings, then rediff the parts for
+/// greater accuracy.
+/// This speedup can produce non-minimal diffs.
+/// @param text1 Old string to be diffed.
+/// @param text2 New string to be diffed.
+/// @param deadline Time when the diff should be complete by.
+/// @return List of Diff objects.
+fn diffLineMode2(
+    dmp: DiffMatchPatch,
+    allocator: std.mem.Allocator,
+    text1_in: []const u8,
+    text2_in: []const u8,
+    deadline: u64,
+) DiffError!DiffList {
+    // Scan the text on a line-by-line basis first.
+    var a = try diffLinesToChars2(allocator, text1_in, text2_in);
+    defer a.deinit(allocator);
+    const text1 = a.chars_1;
+    const text2 = a.chars_2;
+    const line_array = a.line_array;
+
+    var diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
+    errdefer diffs.deinit(allocator);
+    // Convert the diff back to original text.
+    try diffCharsToLines2(allocator, diffs.items, line_array.items);
+    // Eliminate freak matches (e.g. blank lines)
+    try diffCleanupSemantic(allocator, &diffs);
+
+    // Rediff any replacement blocks, this time character-by-character.
+    // Add a dummy entry at the end.
+    try diffs.append(allocator, Diff.init(.equal, ""));
+
+    var pointer: usize = 0;
+    var count_delete: usize = 0;
+    var count_insert: usize = 0;
+    var text_delete = ArrayListUnmanaged(u8){};
+    var text_insert = ArrayListUnmanaged(u8){};
+    defer {
+        text_delete.deinit(allocator);
+        text_insert.deinit(allocator);
+    }
+
+    while (pointer < diffs.items.len) {
+        switch (diffs.items[pointer].operation) {
+            .insert => {
+                count_insert += 1;
+                try text_insert.appendSlice(allocator, diffs.items[pointer].text);
+            },
+            .delete => {
+                count_delete += 1;
+                try text_delete.appendSlice(allocator, diffs.items[pointer].text);
+            },
+            .equal => {
+                // Upon reaching an equality, check for prior redundancies.
+                if (count_delete >= 1 and count_insert >= 1) {
+                    // Delete the offending records and add the merged ones.
+                    freeRangeDiffList(
+                        allocator,
+                        &diffs,
+                        pointer - count_delete - count_insert,
+                        count_delete + count_insert,
+                    );
+                    try diffs.replaceRange(
+                        allocator,
+                        pointer - count_delete - count_insert,
+                        count_delete + count_insert,
+                        &.{},
+                    );
+                    pointer = pointer - count_delete - count_insert;
+                    var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
+                    defer sub_diff.deinit(allocator);
+                    try diffs.insertSlice(allocator, pointer, sub_diff.items);
+                    pointer = pointer + sub_diff.items.len;
+                }
+                count_insert = 0;
+                count_delete = 0;
+                text_delete.items.len = 0;
+                text_insert.items.len = 0;
+            },
+        }
+        pointer += 1;
+    }
+    diffs.items.len -= 1; // Remove the dummy entry at the end.
+
+    return diffs;
+}
+
+/// Split two texts into a list of strings.  Reduce the texts to a string of
+/// hashes where each Unicode character represents one line.
+/// @param text1 First string.
+/// @param text2 Second string.
+/// @return Three element Object array, containing the encoded text1, the
+///     encoded text2 and the List of unique strings.  The zeroth element
+///     of the List of unique strings is intentionally blank.
+fn diffLinesToChars2(
+    allocator: std.mem.Allocator,
+    text1: []const u8,
+    text2: []const u8,
+) DiffError!LinesToCharsResult {
+    var line_array = ArrayListUnmanaged([]const u8){};
+    errdefer line_array.deinit(allocator);
+    var line_hash = std.StringHashMapUnmanaged(usize){};
+    defer line_hash.deinit(allocator);
+    // e.g. line_array[4] == "Hello\n"
+    // e.g. line_hash.get("Hello\n") == 4
+
+    // "\x00" is a valid character, but various debuggers don't like it.
+    // So we'll insert a junk entry to avoid generating a null character.
+    try line_array.append(allocator, "");
+
+    // Allocate 2/3rds of the space for text1, the rest for text2.
+    const chars1 = try diffLinesToCharsMunge2(allocator, text1, &line_array, &line_hash, 170);
+    const chars2 = try diffLinesToCharsMunge2(allocator, text2, &line_array, &line_hash, 255);
+    return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
 
 /// Split a text into a list of strings.  Reduce the texts to a string of
