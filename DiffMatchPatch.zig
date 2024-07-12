@@ -1098,7 +1098,7 @@ fn diffLineMode2(
 // c0 control characters.  The algorithm drops the bottom points,
 // not the top, that is, it will use 0x10ffff given enough unique
 // lines.
-const UNICODE_MAX = 0x0010ffdf;
+const UNICODE_MAX = 0x10ffdf;
 const UNICODE_TWO_THIRDS = 742724;
 const UNICODE_ONE_THIRD = 371355;
 comptime {
@@ -1162,7 +1162,8 @@ fn diffLinesToCharsMunge2(
 /// @param iterator Returns the next segment.  Must have functions
 ///        next(), returning the next segment, and short_circuit(),
 ///        called when max_segments is reached.
-/// @param max_segments Maximum length of lineArray.
+/// @param max_segments Maximum length of lineArray.  Limited to
+///        0x10ffdf.
 /// @return Encoded string.
 fn diffIteratorToCharsMunge(
     allocator: std.mem.Allocator,
@@ -1172,8 +1173,9 @@ fn diffIteratorToCharsMunge(
     iterator: anytype,
     max_segments: usize,
 ) DiffError![]const u8 {
-    // This makes the unreachables in the function legitimate:
-    assert(max_segments <= UNICODE_MAX); // Maximum Unicode codepoint value.
+    // Because we rebase the codepoint off the already counted segments,
+    // this makes the unreachables in the function legitimate:
+    assert(max_segments <= UNICODE_MAX);
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     var count: usize = 0;
