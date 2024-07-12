@@ -900,200 +900,6 @@ fn diffLineMode(
     return diffs;
 }
 
-const LinesToCharsResult = struct {
-    chars_1: []const u8,
-    chars_2: []const u8,
-    line_array: ArrayListUnmanaged([]const u8),
-
-    pub fn deinit(self: *LinesToCharsResult, allocator: Allocator) void {
-        allocator.free(self.chars_1);
-        allocator.free(self.chars_2);
-        self.line_array.deinit(allocator);
-    }
-};
-
-/// Split two texts into a list of strings.  Reduce the texts to a string of
-/// hashes where each Unicode character represents one line.
-/// @param text1 First string.
-/// @param text2 Second string.
-/// @return Three element Object array, containing the encoded text1, the
-///     encoded text2 and the List of unique strings.  The zeroth element
-///     of the List of unique strings is intentionally blank.
-fn diffLinesToChars(
-    allocator: std.mem.Allocator,
-    text1: []const u8,
-    text2: []const u8,
-) DiffError!LinesToCharsResult {
-    var line_array = ArrayListUnmanaged([]const u8){};
-    errdefer line_array.deinit(allocator);
-    var line_hash = std.StringHashMapUnmanaged(usize){};
-    defer line_hash.deinit(allocator);
-    // e.g. line_array[4] == "Hello\n"
-    // e.g. line_hash.get("Hello\n") == 4
-
-    // "\x00" is a valid character, but various debuggers don't like it.
-    // So we'll insert a junk entry to avoid generating a null character.
-    try line_array.append(allocator, "");
-
-    // Allocate 2/3rds of the space for text1, the rest for text2.
-    const chars1 = try diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, 170);
-    const chars2 = try diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, 255);
-    return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
-}
-
-/// Split a text into a list of strings.  Reduce the texts to a string of
-/// hashes where each Unicode character represents one line.
-/// @param text String to encode.
-/// @param lineArray List of unique strings.
-/// @param lineHash Map of strings to indices.
-/// @param maxLines Maximum length of lineArray.
-/// @return Encoded string.
-fn diffLinesToCharsMunge(
-    allocator: std.mem.Allocator,
-    text: []const u8,
-    line_array: *ArrayListUnmanaged([]const u8),
-    line_hash: *std.StringHashMapUnmanaged(usize),
-    max_lines: usize,
-) DiffError![]const u8 {
-    var line_start: isize = 0;
-    var line_end: isize = -1;
-    var line: []const u8 = undefined;
-    var chars = ArrayListUnmanaged(u8){};
-    defer chars.deinit(allocator);
-    // Walk the text, pulling out a Substring for each line.
-    while (line_end < @as(isize, @intCast(text.len)) - 1) {
-        line_end = b: {
-            break :b @as(isize, @intCast(std.mem.indexOf(u8, text[@intCast(line_start)..], "\n") orelse
-                break :b @intCast(text.len - 1))) + line_start;
-        };
-        line = text[@intCast(line_start) .. @as(usize, @intCast(line_start)) + @as(usize, @intCast(line_end + 1 - line_start))];
-
-        if (line_hash.get(line)) |value| {
-            try chars.append(allocator, @intCast(value));
-        } else {
-            if (line_array.items.len == max_lines) {
-                // Bail out at 255 because char 256 == char 0.
-                line = text[@intCast(line_start)..];
-                line_end = @intCast(text.len);
-            }
-            try line_array.append(allocator, line);
-            try line_hash.put(allocator, line, line_array.items.len - 1);
-            try chars.append(allocator, @intCast(line_array.items.len - 1));
-        }
-        line_start = line_end + 1;
-    }
-    return try chars.toOwnedSlice(allocator);
-}
-
-/// Rehydrate the text in a diff from a string of line hashes to real lines
-/// of text.
-/// @param diffs List of Diff objects.
-/// @param lineArray List of unique strings.
-fn diffCharsToLines(
-    allocator: std.mem.Allocator,
-    diffs: []Diff,
-    line_array: []const []const u8,
-) DiffError!void {
-    var text = ArrayListUnmanaged(u8){};
-    defer text.deinit(allocator);
-
-    for (diffs) |*d| {
-        var j: usize = 0;
-        while (j < d.text.len) : (j += 1) {
-            try text.appendSlice(allocator, line_array[d.text[j]]);
-        }
-        allocator.free(d.text);
-        d.text = try text.toOwnedSlice(allocator);
-    }
-}
-
-/// Do a quick line-level diff on both strings, then rediff the parts for
-/// greater accuracy.
-/// This speedup can produce non-minimal diffs.
-/// @param text1 Old string to be diffed.
-/// @param text2 New string to be diffed.
-/// @param deadline Time when the diff should be complete by.
-/// @return List of Diff objects.
-fn diffLineMode2(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
-    text1_in: []const u8,
-    text2_in: []const u8,
-    deadline: u64,
-) DiffError!DiffList {
-    // Scan the text on a line-by-line basis first.
-    var a = try diffLinesToChars2(allocator, text1_in, text2_in);
-    defer a.deinit(allocator);
-    const text1 = a.chars_1;
-    const text2 = a.chars_2;
-    const line_array = a.line_array;
-
-    var diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
-    errdefer diffs.deinit(allocator);
-    // Convert the diff back to original text.
-    try diffCharsToLines2(allocator, diffs.items, line_array.items);
-    // Eliminate freak matches (e.g. blank lines)
-    try diffCleanupSemantic(allocator, &diffs);
-
-    // Rediff any replacement blocks, this time character-by-character.
-    // Add a dummy entry at the end.
-    try diffs.append(allocator, Diff.init(.equal, ""));
-
-    var pointer: usize = 0;
-    var count_delete: usize = 0;
-    var count_insert: usize = 0;
-    var text_delete = ArrayListUnmanaged(u8){};
-    var text_insert = ArrayListUnmanaged(u8){};
-    defer {
-        text_delete.deinit(allocator);
-        text_insert.deinit(allocator);
-    }
-
-    while (pointer < diffs.items.len) {
-        switch (diffs.items[pointer].operation) {
-            .insert => {
-                count_insert += 1;
-                try text_insert.appendSlice(allocator, diffs.items[pointer].text);
-            },
-            .delete => {
-                count_delete += 1;
-                try text_delete.appendSlice(allocator, diffs.items[pointer].text);
-            },
-            .equal => {
-                // Upon reaching an equality, check for prior redundancies.
-                if (count_delete >= 1 and count_insert >= 1) {
-                    // Delete the offending records and add the merged ones.
-                    freeRangeDiffList(
-                        allocator,
-                        &diffs,
-                        pointer - count_delete - count_insert,
-                        count_delete + count_insert,
-                    );
-                    try diffs.replaceRange(
-                        allocator,
-                        pointer - count_delete - count_insert,
-                        count_delete + count_insert,
-                        &.{},
-                    );
-                    pointer = pointer - count_delete - count_insert;
-                    var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
-                    defer sub_diff.deinit(allocator);
-                    try diffs.insertSlice(allocator, pointer, sub_diff.items);
-                    pointer = pointer + sub_diff.items.len;
-                }
-                count_insert = 0;
-                count_delete = 0;
-                text_delete.items.len = 0;
-                text_insert.items.len = 0;
-            },
-        }
-        pointer += 1;
-    }
-    diffs.items.len -= 1; // Remove the dummy entry at the end.
-
-    return diffs;
-}
-
 // These numbers have a 32 point buffer, to avoid annoyance with
 // c0 control characters.  The algorithm drops the bottom points,
 // not the top, that is, it will use 0x10ffff given enough unique
@@ -1111,7 +917,7 @@ comptime {
 /// @return Three element Object array, containing the encoded text1, the
 ///     encoded text2 and the List of unique strings.  The zeroth element
 ///     of the List of unique strings is intentionally blank.
-fn diffLinesToChars2(
+fn diffLinesToChars(
     allocator: std.mem.Allocator,
     text1: []const u8,
     text2: []const u8,
@@ -1124,10 +930,22 @@ fn diffLinesToChars2(
     // e.g. line_hash.get("Hello\n") == 4
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
-    const chars1 = try diffLinesToCharsMunge2(allocator, text1, &line_array, &line_hash, UNICODE_TWO_THIRDS);
-    const chars2 = try diffLinesToCharsMunge2(allocator, text2, &line_array, &line_hash, UNICODE_ONE_THIRD);
+    const chars1 = try diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, UNICODE_TWO_THIRDS);
+    const chars2 = try diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, UNICODE_ONE_THIRD);
     return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
+
+const LinesToCharsResult = struct {
+    chars_1: []const u8,
+    chars_2: []const u8,
+    line_array: ArrayListUnmanaged([]const u8),
+
+    pub fn deinit(self: *LinesToCharsResult, allocator: Allocator) void {
+        allocator.free(self.chars_1);
+        allocator.free(self.chars_2);
+        self.line_array.deinit(allocator);
+    }
+};
 
 /// Split a text into a list of strings.  Reduce the texts to a string of
 /// hashes where each Unicode character represents one line.
@@ -1136,7 +954,7 @@ fn diffLinesToChars2(
 /// @param lineHash Map of strings to indices.
 /// @param maxLines Maximum length of lineArray.
 /// @return Encoded string.
-fn diffLinesToCharsMunge2(
+fn diffLinesToCharsMunge(
     allocator: std.mem.Allocator,
     text: []const u8,
     line_array: *ArrayListUnmanaged([]const u8),
@@ -1210,7 +1028,7 @@ fn diffIteratorToCharsMunge(
 /// of text.
 /// @param diffs List of Diff objects.
 /// @param lineArray List of unique strings.
-fn diffCharsToLines2(
+fn diffCharsToLines(
     allocator: Allocator,
     diffs: []Diff,
     line_array: []const []const u8,
@@ -3705,7 +3523,7 @@ test diffHalfMatch {
     }});
 }
 
-test "diffLinesToChars2" {
+test diffLinesToChars {
     const allocator = testing.allocator;
     // Convert lines down to characters.
     var tmp_array_list = std.ArrayList([]const u8).init(allocator);
@@ -3713,7 +3531,7 @@ test "diffLinesToChars2" {
     try tmp_array_list.append("alpha\n");
     try tmp_array_list.append("beta\n");
 
-    var result = try diffLinesToChars2(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
+    var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
 
     try testing.expectEqualStrings(" ! ", result.chars_1); // Shared lines #1
     try testing.expectEqualStrings("! !", result.chars_2); // Shared lines #2
@@ -3725,7 +3543,7 @@ test "diffLinesToChars2" {
     try tmp_array_list.append("beta\r\n");
     try tmp_array_list.append("\r\n");
 
-    result = try diffLinesToChars2(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
+    result = try diffLinesToChars(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
     try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
     try testing.expectEqualStrings(" !\"\"", result.chars_2); // Empty string and blank lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
@@ -3734,7 +3552,7 @@ test "diffLinesToChars2" {
     try tmp_array_list.append("a");
     try tmp_array_list.append("b");
 
-    result = try diffLinesToChars2(allocator, "a", "b");
+    result = try diffLinesToChars(allocator, "a", "b");
     try testing.expectEqualStrings(" ", result.chars_1); // No linebreaks #1.
     try testing.expectEqualStrings("!", result.chars_2); // No linebreaks #2.
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
@@ -3767,84 +3585,12 @@ test "diffLinesToChars2" {
         }
         const codepoint_len = std.unicode.utf8CountCodepoints(char_list.items) catch unreachable;
         try testing.expectEqual(@as(usize, n - 32), codepoint_len); // Test initialization fail #2
-        result = try diffLinesToChars2(allocator, line_list.items, "");
+        result = try diffLinesToChars(allocator, line_list.items, "");
         defer result.deinit(allocator);
         try testing.expectEqual(char_list.items.len, result.chars_1.len);
         try testing.expectEqualSlices(u8, char_list.items, result.chars_1);
         try testing.expectEqualStrings("", result.chars_2);
     }
-}
-
-test diffLinesToChars {
-    const allocator = testing.allocator;
-    // Convert lines down to characters.
-    var tmp_array_list = std.ArrayList([]const u8).init(allocator);
-    defer tmp_array_list.deinit();
-    try tmp_array_list.append("");
-    try tmp_array_list.append("alpha\n");
-    try tmp_array_list.append("beta\n");
-
-    var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
-    try testing.expectEqualStrings("\u{0001}\u{0002}\u{0001}", result.chars_1); // Shared lines #1
-    try testing.expectEqualStrings("\u{0002}\u{0001}\u{0002}", result.chars_2); // Shared lines #2
-    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
-
-    tmp_array_list.items.len = 0;
-    try tmp_array_list.append("");
-    try tmp_array_list.append("alpha\r\n");
-    try tmp_array_list.append("beta\r\n");
-    try tmp_array_list.append("\r\n");
-    result.deinit(allocator);
-
-    result = try diffLinesToChars(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
-    try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
-    try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
-    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
-    tmp_array_list.items.len = 0;
-    try tmp_array_list.append("");
-    try tmp_array_list.append("a");
-    try tmp_array_list.append("b");
-    result.deinit(allocator);
-
-    result = try diffLinesToChars(allocator, "a", "b");
-    try testing.expectEqualStrings("\u{0001}", result.chars_1); // No linebreaks #1.
-    try testing.expectEqualStrings("\u{0002}", result.chars_2); // No linebreaks #2.
-    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
-    result.deinit(allocator);
-
-    // TODO: More than 256 to reveal any 8-bit limitations but this requires
-    // some unicode logic that I don't want to deal with
-    //
-    // Casting to Unicode is straightforward and should sort correctly, I'm
-    // more concerned about the weird behavior when the 'char' is equal to a
-    // newline.  Uncomment the EqualSlices below to see what I mean.
-    // I think there's some cleanup logic in the actual linediff that should
-    // take care of the problem, but I don't like it.
-
-    const n: u8 = 255;
-    tmp_array_list.items.len = 0;
-
-    var line_list = std.ArrayList(u8).init(allocator);
-    defer line_list.deinit();
-    var char_list = std.ArrayList(u8).init(allocator);
-    defer char_list.deinit();
-
-    var i: u8 = 1;
-    while (i < n) : (i += 1) {
-        try tmp_array_list.append(&.{ i, '\n' });
-        try line_list.appendSlice(&.{ i, '\n' });
-        try char_list.append(i);
-    }
-    try testing.expectEqual(@as(usize, n - 1), tmp_array_list.items.len); // Test initialization fail #1
-    try testing.expectEqual(@as(usize, n - 1), char_list.items.len); // Test initialization fail #2
-    try tmp_array_list.insert(0, "");
-    result = try diffLinesToChars(allocator, line_list.items, "");
-    defer result.deinit(allocator);
-    // TODO: This isn't equal, should it be?
-    // try testing.expectEqualSlices(u8, char_list.items, result.chars_1);
-    try testing.expectEqualStrings("", result.chars_2);
-    // TODO this is wrong because of the max_value I think?
-    // try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items);
 }
 
 fn testDiffCharsToLines(
@@ -3867,27 +3613,7 @@ fn testDiffCharsToLines(
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
-fn testDiffCharsToLines2(
-    allocator: std.mem.Allocator,
-    params: struct {
-        diffs: []const Diff,
-        line_array: []const []const u8,
-        expected: []const Diff,
-    },
-) !void {
-    var diffs = try DiffList.initCapacity(allocator, params.diffs.len);
-    defer deinitDiffList(allocator, &diffs);
-
-    for (params.diffs) |item| {
-        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
-    }
-
-    try diffCharsToLines2(allocator, diffs.items, params.line_array);
-
-    try testing.expectEqualDeep(params.expected, diffs.items);
-}
-
-test "diffCharsToLines2" {
+test diffCharsToLines {
     // Convert chars up to lines.
     var diff_list = DiffList{};
     defer deinitDiffList(testing.allocator, &diff_list);
@@ -3898,7 +3624,7 @@ test "diffCharsToLines2" {
     });
     try testing.checkAllAllocationFailures(
         testing.allocator,
-        testDiffCharsToLines2,
+        testDiffCharsToLines,
         .{.{
             .diffs = diff_list.items,
             .line_array = &[_][]const u8{
@@ -3911,30 +3637,6 @@ test "diffCharsToLines2" {
             },
         }},
     );
-}
-
-test diffCharsToLines {
-    // Convert chars up to lines.
-    var diff_list = DiffList{};
-    defer deinitDiffList(testing.allocator, &diff_list);
-    try diff_list.ensureTotalCapacity(testing.allocator, 2);
-    diff_list.appendSliceAssumeCapacity(&.{
-        Diff.init(.equal, try testing.allocator.dupe(u8, "\u{0001}\u{0002}\u{0001}")),
-        Diff.init(.insert, try testing.allocator.dupe(u8, "\u{0002}\u{0001}\u{0002}")),
-    });
-    try testing.checkAllAllocationFailures(testing.allocator, testDiffCharsToLines, .{.{
-        .diffs = diff_list.items,
-        .line_array = &[_][]const u8{
-            "",
-            "alpha\n",
-            "beta\n",
-        },
-        .expected = &.{
-            .{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
-            .{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
-        },
-    }});
-    // TODO: Implement exhaustive tests
 }
 
 fn testDiffCleanupMerge(allocator: std.mem.Allocator, params: struct {
