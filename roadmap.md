@@ -4,11 +4,11 @@
     - [✅] Add DiffMatchPatch object instead of @This() (which won't work)
 - [✅] Port match.
 - [✅] Port test coverage.
-- [ ] Unicode-aware `diffLineMode`.
-    - [ ] Coverage for all corner cases of preventing diff splits which aren't
+- [✅] Unicode-aware `diffLineMode`.
+    - [✅] Coverage for all corner cases of preventing diff splits which aren't
           on valid UTF-8 boundaries.
-    - [ ] Convert `line_array` to encode UTF-8 byte sequences and store `u21` keys
-    - [ ] Make the inner function accept a stream iterator, one which delivers the
+    - [✅] Convert `line_array` to encode UTF-8 byte sequences and store `u21` keys
+    - [✅] Make the inner function accept a stream iterator, one which delivers the
           entire string with boundaries (where applicable) at the end.
 - [ ] Refactor: the port currently treats Diffs and Patches as raw ArrayLists,
       these should be proper Zig objects, with member functions, and probably
@@ -34,6 +34,9 @@
 - [ ] Histogram?
     - [ ] Imara diff has an optimized histogram:
           https://github.com/pascalkuthe/imara-diff
+    - [ ] Calculating the histogram while hashing the lines would be
+          straightforward, this could be comptime-gated, but probably
+          just a second copy of the munge function is fine.
 - [ ] POSIX-diff compatible patch output?
     - [ ] This one seems pretty worthwhile to me.  It would need to call line
           mode without refining further, but everything else is fairly simple.
