@@ -1094,6 +1094,16 @@ fn diffLineMode2(
     return diffs;
 }
 
+// These numbers have a 32 point buffer, to avoid annoyance with
+// c0 control characters.  The algorithm drops the bottom points,
+// not the top, that is, it will use 0x10ffff given enough unique
+// lines.
+const UNICODE_MAX = 0x0010ffdf;
+const UNICODE_TWO_THIRDS = 742724;
+const UNICODE_ONE_THIRD = 371355;
+comptime {
+    assert(UNICODE_TWO_THIRDS + UNICODE_ONE_THIRD == UNICODE_MAX);
+}
 /// Split two texts into a list of strings.  Reduce the texts to a string of
 /// hashes where each Unicode character represents one line.
 /// @param text1 First string.
@@ -1114,8 +1124,8 @@ fn diffLinesToChars2(
     // e.g. line_hash.get("Hello\n") == 4
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
-    const chars1 = try diffLinesToCharsMunge2(allocator, text1, &line_array, &line_hash, 170);
-    const chars2 = try diffLinesToCharsMunge2(allocator, text2, &line_array, &line_hash, 255);
+    const chars1 = try diffLinesToCharsMunge2(allocator, text1, &line_array, &line_hash, UNICODE_TWO_THIRDS);
+    const chars2 = try diffLinesToCharsMunge2(allocator, text2, &line_array, &line_hash, UNICODE_ONE_THIRD);
     return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
 
@@ -1163,7 +1173,7 @@ fn diffIteratorToCharsMunge(
     max_segments: usize,
 ) DiffError![]const u8 {
     // This makes the unreachables in the function legitimate:
-    assert(max_segments <= 0x10ffff); // Maximum Unicode codepoint value.
+    assert(max_segments <= UNICODE_MAX); // Maximum Unicode codepoint value.
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     var count: usize = 0;
@@ -3727,21 +3737,40 @@ test "diffLinesToChars2" {
     try testing.expectEqualStrings("!", result.chars_2); // No linebreaks #2.
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
     result.deinit(allocator);
-}
+    {
 
-test "workshop" {
-    const allocator = testing.allocator;
-    // Convert lines down to characters.
-    var tmp_array_list = std.ArrayList([]const u8).init(allocator);
-    defer tmp_array_list.deinit();
-    try tmp_array_list.append("a");
-    try tmp_array_list.append("b");
+        // TODO: More than 256 to reveal any 8-bit limitations but this requires
+        // some unicode logic that I don't want to deal with
+        //
+        // Casting to Unicode is straightforward and should sort correctly, I'm
+        // more concerned about the weird behavior when the 'char' is equal to a
+        // newline.  Uncomment the EqualSlices below to see what I mean.
+        // I think there's some cleanup logic in the actual linediff that should
+        // take care of the problem, but I don't like it.
 
-    var result = try diffLinesToChars2(allocator, "a", "b");
-    try testing.expectEqualStrings(" ", result.chars_1); // No linebreaks #1.
-    try testing.expectEqualStrings("!", result.chars_2); // No linebreaks #2.
-    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
-    result.deinit(allocator);
+        const n: u21 = 1024;
+
+        var line_list = std.ArrayList(u8).init(allocator);
+        defer line_list.deinit();
+        var char_list = std.ArrayList(u8).init(allocator);
+        defer char_list.deinit();
+
+        var i: u21 = 32;
+        var char_buf: [4]u8 = undefined;
+        while (i < n) : (i += 1) {
+            const nbytes = std.unicode.wtf8Encode(i, &char_buf) catch unreachable;
+            try line_list.appendSlice(char_buf[0..nbytes]);
+            try line_list.append('\n');
+            try char_list.appendSlice(char_buf[0..nbytes]);
+        }
+        const codepoint_len = std.unicode.utf8CountCodepoints(char_list.items) catch unreachable;
+        try testing.expectEqual(@as(usize, n - 32), codepoint_len); // Test initialization fail #2
+        result = try diffLinesToChars2(allocator, line_list.items, "");
+        defer result.deinit(allocator);
+        try testing.expectEqual(char_list.items.len, result.chars_1.len);
+        try testing.expectEqualSlices(u8, char_list.items, result.chars_1);
+        try testing.expectEqualStrings("", result.chars_2);
+    }
 }
 
 test diffLinesToChars {
@@ -3769,7 +3798,6 @@ test diffLinesToChars {
     try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
     try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
-    // ------
     tmp_array_list.items.len = 0;
     try tmp_array_list.append("");
     try tmp_array_list.append("a");
