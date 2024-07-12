@@ -1220,17 +1220,17 @@ fn diffCharsToLines2(
     for (diffs) |*d| {
         var cursor: usize = 0;
         while (cursor < d.text.len) {
-            const cp_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch {
+            const cp_len = std.unicode.utf8ByteSequenceLength(d.text[cursor]) catch {
                 @panic("Internal decode error in diffsCharsToLines");
             };
-            const cp = try std.unicode.wtf8Decode(text[cursor..][0..cp_len]) catch {
+            const cp = std.unicode.wtf8Decode(d.text[cursor..][0..cp_len]) catch {
                 @panic("Internal decode error in diffCharsToLines");
             };
-            try text.appendSlice(line_array[cp - 32]);
+            try text.appendSlice(allocator, line_array[cp - 32]);
             cursor += cp_len;
         }
         allocator.free(d.text);
-        d.text = try text.toOwnedSlice();
+        d.text = try text.toOwnedSlice(allocator);
     }
 }
 
@@ -3867,6 +3867,52 @@ fn testDiffCharsToLines(
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
+fn testDiffCharsToLines2(
+    allocator: std.mem.Allocator,
+    params: struct {
+        diffs: []const Diff,
+        line_array: []const []const u8,
+        expected: []const Diff,
+    },
+) !void {
+    var diffs = try DiffList.initCapacity(allocator, params.diffs.len);
+    defer deinitDiffList(allocator, &diffs);
+
+    for (params.diffs) |item| {
+        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+    }
+
+    try diffCharsToLines2(allocator, diffs.items, params.line_array);
+
+    try testing.expectEqualDeep(params.expected, diffs.items);
+}
+
+test "diffCharsToLines2" {
+    // Convert chars up to lines.
+    var diff_list = DiffList{};
+    defer deinitDiffList(testing.allocator, &diff_list);
+    try diff_list.ensureTotalCapacity(testing.allocator, 2);
+    diff_list.appendSliceAssumeCapacity(&.{
+        Diff.init(.equal, try testing.allocator.dupe(u8, " ! ")),
+        Diff.init(.insert, try testing.allocator.dupe(u8, "! !")),
+    });
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testDiffCharsToLines2,
+        .{.{
+            .diffs = diff_list.items,
+            .line_array = &[_][]const u8{
+                "alpha\n",
+                "beta\n",
+            },
+            .expected = &.{
+                .{ .operation = .equal, .text = "alpha\nbeta\nalpha\n" },
+                .{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
+            },
+        }},
+    );
+}
+
 test diffCharsToLines {
     // Convert chars up to lines.
     var diff_list = DiffList{};
@@ -3888,7 +3934,6 @@ test diffCharsToLines {
             .{ .operation = .insert, .text = "beta\nalpha\nbeta\n" },
         },
     }});
-
     // TODO: Implement exhaustive tests
 }
 
