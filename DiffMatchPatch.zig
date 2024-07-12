@@ -1167,7 +1167,7 @@ fn diffIteratorToCharsMunge(
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     var count: usize = 0;
-    var codepoint: u21 = 32;
+    var codepoint: u21 = 32 + cast(u21, segment_array.items.len);
     var char_buf: [4]u8 = undefined;
     while (iterator.next()) |line| {
         if (segment_hash.get(line)) |value| {
@@ -3702,10 +3702,46 @@ test "diffLinesToChars2" {
     try tmp_array_list.append("beta\n");
 
     var result = try diffLinesToChars2(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
-    defer result.deinit(allocator);
+
     try testing.expectEqualStrings(" ! ", result.chars_1); // Shared lines #1
     try testing.expectEqualStrings("! !", result.chars_2); // Shared lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
+    result.deinit(allocator);
+
+    tmp_array_list.items.len = 0;
+    try tmp_array_list.append("alpha\r\n");
+    try tmp_array_list.append("beta\r\n");
+    try tmp_array_list.append("\r\n");
+
+    result = try diffLinesToChars2(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
+    try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
+    try testing.expectEqualStrings(" !\"\"", result.chars_2); // Empty string and blank lines #2
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
+    result.deinit(allocator);
+    tmp_array_list.items.len = 0;
+    try tmp_array_list.append("a");
+    try tmp_array_list.append("b");
+
+    result = try diffLinesToChars2(allocator, "a", "b");
+    try testing.expectEqualStrings(" ", result.chars_1); // No linebreaks #1.
+    try testing.expectEqualStrings("!", result.chars_2); // No linebreaks #2.
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
+    result.deinit(allocator);
+}
+
+test "workshop" {
+    const allocator = testing.allocator;
+    // Convert lines down to characters.
+    var tmp_array_list = std.ArrayList([]const u8).init(allocator);
+    defer tmp_array_list.deinit();
+    try tmp_array_list.append("a");
+    try tmp_array_list.append("b");
+
+    var result = try diffLinesToChars2(allocator, "a", "b");
+    try testing.expectEqualStrings(" ", result.chars_1); // No linebreaks #1.
+    try testing.expectEqualStrings("!", result.chars_2); // No linebreaks #2.
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
+    result.deinit(allocator);
 }
 
 test diffLinesToChars {
@@ -3733,7 +3769,7 @@ test diffLinesToChars {
     try testing.expectEqualStrings("", result.chars_1); // Empty string and blank lines #1
     try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
-
+    // ------
     tmp_array_list.items.len = 0;
     try tmp_array_list.append("");
     try tmp_array_list.append("a");
