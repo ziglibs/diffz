@@ -14,7 +14,6 @@ pub const DiffError = error{
 };
 
 //| XXX This boolean is entirely for calming the compiler down while working
-
 const XXX = false;
 
 //| Fields
@@ -317,7 +316,6 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
         const b = before[before.len - i];
         const a = after[after.len - i];
         if (a != b) {
-            if (i == 1) return 0;
             return before.len - fixSplitForward(before, before.len - i + 1);
         }
     }
