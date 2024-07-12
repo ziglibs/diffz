@@ -1722,6 +1722,7 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     // should not be possible.
     // I'm going to add a panic just so I know if test cases of any sort
     // trigger this code path.
+    // XXX Remove this before merge if it can't be triggered.
     if (text2[best_idx] >= 0x80 and is_follow(text2[best_idx + 1])) {
         if (true) {
             @panic("Your assumption regarding diffCommonOverlap is invalid!");
@@ -3225,7 +3226,7 @@ fn decodeUri(allocator: Allocator, line: []const u8) ![]const u8 {
         ) catch return error.BadPatchString;
         try new_line.append(codeunit[0]);
         var cursor = first + 3;
-        while (std.mem.indexOf(u8, line[cursor..], "%")) |next| {
+        while (std.mem.indexOfScalarPos(u8, line, cursor, '%')) |next| {
             codeunit = std.fmt.hexToBytes(
                 &out_buf,
                 line[next + 1 .. next + 3],
@@ -3314,7 +3315,7 @@ fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
 //| TESTS
 //|
 
-test encodeUri {
+test "encodeUri" {
     const allocator = std.testing.allocator;
     const special_chars = "!#$&'()*+,-./:;=?@_~";
     const special_encoded = try encodeUri(allocator, special_chars);
@@ -3325,9 +3326,12 @@ test encodeUri {
     defer allocator.free(alpha_encoded);
     try testing.expectEqualStrings(alphaspace, alpha_encoded);
     const to_encode = "\"%<>[\\]^`{|}δ";
-    const encodes = try encodeUri(allocator, to_encode);
-    defer allocator.free(encodes);
-    try testing.expectEqualStrings("%22%25%3C%3E%5B%5C%5D%5E%60%7B%7C%7D%CE%B4", encodes);
+    const encoded = try encodeUri(allocator, to_encode);
+    defer allocator.free(encoded);
+    try testing.expectEqualStrings("%22%25%3C%3E%5B%5C%5D%5E%60%7B%7C%7D%CE%B4", encoded);
+    const decoded = try decodeUri(allocator, encoded);
+    defer allocator.free(decoded);
+    try testing.expectEqualStrings(to_encode, decoded);
 }
 
 test diffCommonPrefix {
