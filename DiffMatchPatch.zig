@@ -409,7 +409,8 @@ fn diffCompute(
     }
 
     // Check to see if the problem can be split in two.
-    if (try dmp.diffHalfMatch(allocator, before, after)) |half_match| {
+    var maybe_half_match = try dmp.diffHalfMatch(allocator, before, after);
+    if (maybe_half_match) |*half_match| {
         // A half-match was found, sort out the return data.
         defer half_match.deinit(allocator);
         // Send both pairs off for separate processing.
@@ -440,11 +441,9 @@ fn diffCompute(
         // Merge the results.
         try diffs.ensureUnusedCapacity(allocator, 1);
         diffs.appendAssumeCapacity(
-            Diff.init(.equal, try allocator.dupe(
-                u8,
-                half_match.common_middle,
-            )),
+            Diff.init(.equal, half_match.common_middle),
         );
+        half_match.common_middle = "";
         try diffs.appendSlice(allocator, diffs_b.items);
         return diffs;
     }
@@ -462,14 +461,13 @@ const HalfMatchResult = struct {
     suffix_after: []const u8,
     common_middle: []const u8,
 
-    // TODO maybe check for empty slice here for fewer copies,
-    // as in, maybe we can transfer ownership and replace with "".
-    pub fn deinit(hmr: HalfMatchResult, alloc: Allocator) void {
-        alloc.free(hmr.prefix_before);
-        alloc.free(hmr.suffix_before);
-        alloc.free(hmr.prefix_after);
-        alloc.free(hmr.suffix_after);
-        alloc.free(hmr.common_middle);
+    // Free the HalfMatchResult's memory.
+    pub fn deinit(hmr: HalfMatchResult, allocator: Allocator) void {
+        allocator.free(hmr.prefix_before);
+        allocator.free(hmr.suffix_before);
+        allocator.free(hmr.prefix_after);
+        allocator.free(hmr.suffix_after);
+        allocator.free(hmr.common_middle);
     }
 };
 
