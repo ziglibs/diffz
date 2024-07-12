@@ -926,6 +926,7 @@ fn diffLinesToChars(
 ) DiffError!LinesToCharsResult {
     var line_array = ArrayListUnmanaged([]const u8){};
     errdefer line_array.deinit(allocator);
+    line_array.items.len = 0;
     var line_hash = std.StringHashMapUnmanaged(u21){};
     defer line_hash.deinit(allocator);
     // e.g. line_array[4] == "Hello\n"
@@ -966,7 +967,6 @@ fn diffLinesToCharsMunge(
     var iter = LineIterator{ .text = text };
     return try diffIteratorToCharsMunge(
         allocator,
-        text,
         line_array,
         line_hash,
         &iter,
@@ -974,9 +974,17 @@ fn diffLinesToCharsMunge(
     );
 }
 
-/// Split a text into segments.  Reduce the texts to a string of
-/// hashes where each Unicode character represents one segment.
-/// @param text String to encode.
+/// Split a text into segments, yielded from an iterator.
+/// Reduce the texts to a string of hashes where each Unicode character
+/// represents one segment.
+///
+/// Iterators must provide: `next()`, which gives the next segment of
+/// the test, and `short_circuit(usize)`, which is called when the
+/// segment limit is reached, and returns the rest of the text.  The
+/// parameter provided will be the length of the last segment provided
+/// by `next()`, since the function will not process that segment, and
+/// its text must be included in the remainder.
+///
 /// @param segment_array List of unique string segments.
 /// @param line_hash Map of strings to indices into segment_array.
 /// @param iterator Returns the next segment.  Must have functions
@@ -987,7 +995,6 @@ fn diffLinesToCharsMunge(
 /// @return Encoded string.
 fn diffIteratorToCharsMunge(
     allocator: std.mem.Allocator,
-    text: []const u8,
     segment_array: *ArrayListUnmanaged([]const u8),
     segment_hash: *std.StringHashMapUnmanaged(u21),
     iterator: anytype,
@@ -998,23 +1005,21 @@ fn diffIteratorToCharsMunge(
     assert(max_segments <= UNICODE_MAX);
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
-    var count: usize = 0;
     var codepoint: u21 = CHAR_OFFSET + cast(u21, segment_array.items.len);
     var char_buf: [4]u8 = undefined;
     while (iterator.next()) |line| {
         if (segment_hash.get(line)) |value| {
             const nbytes = std.unicode.wtf8Encode(value, &char_buf) catch unreachable;
             try chars.appendSlice(allocator, char_buf[0..nbytes]);
-            count += line.len;
         } else {
             if (codepoint - CHAR_OFFSET == max_segments) {
                 // Bail out
-                iterator.short_circuit();
-                const final_line = text[count..];
+                const final_line = iterator.short_circuit(line.len);
                 try segment_array.append(allocator, final_line);
                 try segment_hash.put(allocator, final_line, codepoint);
                 const nbytes = std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
                 try chars.appendSlice(allocator, char_buf[0..nbytes]);
+                break;
             }
             try segment_array.append(allocator, line);
             try segment_hash.put(allocator, line, codepoint);
@@ -1078,8 +1083,12 @@ const LineIterator = struct {
         }
     }
 
-    pub fn short_circuit(iter: *LineIterator) void {
+    /// Terminate the iterator early by returning all remaining text.
+    /// `back_out` parameter is how far before the cursor to slice from.
+    pub fn short_circuit(iter: *LineIterator, back_out: usize) []const u8 {
+        const from = iter.cursor - back_out;
         iter.cursor = iter.text.len;
+        return iter.text[from..];
     }
 };
 
@@ -3538,7 +3547,6 @@ test diffLinesToChars {
     try tmp_array_list.append("beta\n");
 
     var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
-
     try testing.expectEqualStrings(" ! ", result.chars_1); // Shared lines #1
     try testing.expectEqualStrings("! !", result.chars_2); // Shared lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
@@ -3563,17 +3571,8 @@ test diffLinesToChars {
     try testing.expectEqualStrings("!", result.chars_2); // No linebreaks #2.
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // No linebreaks #3.
     result.deinit(allocator);
+
     {
-
-        // TODO: More than 256 to reveal any 8-bit limitations but this requires
-        // some unicode logic that I don't want to deal with
-        //
-        // Casting to Unicode is straightforward and should sort correctly, I'm
-        // more concerned about the weird behavior when the 'char' is equal to a
-        // newline.  Uncomment the EqualSlices below to see what I mean.
-        // I think there's some cleanup logic in the actual linediff that should
-        // take care of the problem, but I don't like it.
-
         const n: u21 = 1024;
 
         var line_list = std.ArrayList(u8).init(allocator);
@@ -3590,12 +3589,27 @@ test diffLinesToChars {
             try char_list.appendSlice(char_buf[0..nbytes]);
         }
         const codepoint_len = std.unicode.utf8CountCodepoints(char_list.items) catch unreachable;
-        try testing.expectEqual(@as(usize, n - CHAR_OFFSET), codepoint_len); // Test initialization fail #2
+        try testing.expectEqual(@as(usize, n - CHAR_OFFSET), codepoint_len);
         result = try diffLinesToChars(allocator, line_list.items, "");
-        defer result.deinit(allocator);
         try testing.expectEqual(char_list.items.len, result.chars_1.len);
         try testing.expectEqualSlices(u8, char_list.items, result.chars_1);
         try testing.expectEqualStrings("", result.chars_2);
+        result.deinit(allocator);
+
+        // Test iterator stop
+        // TODO this isn't a complete test, it verifies that iteration
+        // stops, but not that it does so correctly.
+        var line_array = ArrayListUnmanaged([]const u8){};
+        defer line_array.deinit(allocator);
+        line_array.items.len = 0;
+        var line_hash = std.StringHashMapUnmanaged(u21){};
+        defer line_hash.deinit(allocator);
+        const char_out = try diffLinesToCharsMunge(allocator, line_list.items, &line_array, &line_hash, 950);
+        defer allocator.free(char_out);
+        try testing.expectEqualStrings(
+            "ϖ\nϗ\nϘ\nϙ\nϚ\nϛ\nϜ\nϝ\nϞ\nϟ\nϠ\nϡ\nϢ\nϣ\nϤ\nϥ\nϦ\nϧ\nϨ\nϩ\nϪ\nϫ\nϬ\nϭ\nϮ\nϯ\nϰ\nϱ\nϲ\nϳ\nϴ\nϵ\n϶\nϷ\nϸ\nϹ\nϺ\nϻ\nϼ\nϽ\nϾ\nϿ\n",
+            line_array.getLast(),
+        );
     }
 }
 
@@ -4882,7 +4896,7 @@ fn testDiffCleanupEfficiency(
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
-test "diffCleanupEfficiency" {
+test diffCleanupEfficiency {
     const allocator = testing.allocator;
     var dmp = DiffMatchPatch{};
     dmp.diff_edit_cost = 4;
