@@ -1108,14 +1108,10 @@ fn diffLinesToChars2(
 ) DiffError!LinesToCharsResult {
     var line_array = ArrayListUnmanaged([]const u8){};
     errdefer line_array.deinit(allocator);
-    var line_hash = std.StringHashMapUnmanaged(usize){};
+    var line_hash = std.StringHashMapUnmanaged(u21){};
     defer line_hash.deinit(allocator);
     // e.g. line_array[4] == "Hello\n"
     // e.g. line_hash.get("Hello\n") == 4
-
-    // "\x00" is a valid character, but various debuggers don't like it.
-    // So we'll insert a junk entry to avoid generating a null character.
-    try line_array.append(allocator, "");
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
     const chars1 = try diffLinesToCharsMunge2(allocator, text1, &line_array, &line_hash, 170);
@@ -1134,15 +1130,15 @@ fn diffLinesToCharsMunge2(
     allocator: std.mem.Allocator,
     text: []const u8,
     line_array: *ArrayListUnmanaged([]const u8),
-    line_hash: *std.StringHashMapUnmanaged(usize),
+    line_hash: *std.StringHashMapUnmanaged(u21),
     max_lines: usize,
 ) DiffError![]const u8 {
     var iter = LineIterator{ .text = text };
     return try diffIteratorToCharsMunge(
         allocator,
         text,
-        &line_array,
-        &line_hash,
+        line_array,
+        line_hash,
         &iter,
         max_lines,
     );
@@ -1166,14 +1162,16 @@ fn diffIteratorToCharsMunge(
     iterator: anytype,
     max_segments: usize,
 ) DiffError![]const u8 {
+    // This makes the unreachables in the function legitimate:
+    assert(max_segments <= 0x10ffff); // Maximum Unicode codepoint value.
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
-    var count = 0;
+    var count: usize = 0;
     var codepoint: u21 = 32;
     var char_buf: [4]u8 = undefined;
     while (iterator.next()) |line| {
         if (segment_hash.get(line)) |value| {
-            const nbytes = try std.unicode.wtf8Encode(value, &char_buf) catch unreachable;
+            const nbytes = std.unicode.wtf8Encode(value, &char_buf) catch unreachable;
             try chars.appendSlice(allocator, char_buf[0..nbytes]);
             count += line.len;
         } else {
@@ -1183,16 +1181,17 @@ fn diffIteratorToCharsMunge(
                 const final_line = text[count..];
                 try segment_array.append(allocator, final_line);
                 try segment_hash.put(allocator, final_line, codepoint);
-                const nbytes = try std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
+                const nbytes = std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
                 try chars.appendSlice(allocator, char_buf[0..nbytes]);
             }
             try segment_array.append(allocator, line);
             try segment_hash.put(allocator, line, codepoint);
-            const nbytes = try std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
+            const nbytes = std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
             try chars.appendSlice(allocator, char_buf[0..nbytes]);
             codepoint += 1;
         }
     }
+    return try chars.toOwnedSlice(allocator);
 }
 
 /// Rehydrate the text in a diff from a string of line hashes to real lines
@@ -1230,7 +1229,7 @@ const LineIterator = struct {
 
     pub fn next(iter: *LineIterator) ?[]const u8 {
         if (iter.cursor == iter.text.len) return null;
-        const maybe_newline = std.mem.indexOfPos(
+        const maybe_newline = std.mem.indexOfScalarPos(
             u8,
             iter.text,
             iter.cursor,
@@ -3479,6 +3478,10 @@ fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return charlist.toOwnedSlice();
 }
 
+//|
+//| TESTS
+//|
+
 test encodeUri {
     const allocator = std.testing.allocator;
     const special_chars = "!#$&'()*+,-./:;=?@_~";
@@ -3688,6 +3691,21 @@ test diffHalfMatch {
         .after = "xHelloHeHulloy",
         .expected = null,
     }});
+}
+
+test "diffLinesToChars2" {
+    const allocator = testing.allocator;
+    // Convert lines down to characters.
+    var tmp_array_list = std.ArrayList([]const u8).init(allocator);
+    defer tmp_array_list.deinit();
+    try tmp_array_list.append("alpha\n");
+    try tmp_array_list.append("beta\n");
+
+    var result = try diffLinesToChars2(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
+    defer result.deinit(allocator);
+    try testing.expectEqualStrings(" ! ", result.chars_1); // Shared lines #1
+    try testing.expectEqualStrings("! !", result.chars_2); // Shared lines #2
+    try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
 }
 
 test diffLinesToChars {
