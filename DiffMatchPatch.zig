@@ -964,7 +964,6 @@ fn diffLinesToCharsMunge(
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     // Walk the text, pulling out a Substring for each line.
-    // TODO this can be handled with a Reader, avoiding all the manual splitting
     while (line_end < @as(isize, @intCast(text.len)) - 1) {
         line_end = b: {
             break :b @as(isize, @intCast(std.mem.indexOf(u8, text[@intCast(line_start)..], "\n") orelse
@@ -1010,6 +1009,135 @@ fn diffCharsToLines(
         d.text = try text.toOwnedSlice(allocator);
     }
 }
+
+/// Split a text into a list of strings.  Reduce the texts to a string of
+/// hashes where each Unicode character represents one line.
+/// @param text String to encode.
+/// @param lineArray List of unique strings.
+/// @param lineHash Map of strings to indices.
+/// @param maxLines Maximum length of lineArray.
+/// @return Encoded string.
+fn diffLinesToCharsMunge2(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    line_array: *ArrayListUnmanaged([]const u8),
+    line_hash: *std.StringHashMapUnmanaged(usize),
+    max_lines: usize,
+) DiffError![]const u8 {
+    var iter = LineIterator{ .text = text };
+    return try diffIteratorToCharsMunge(
+        allocator,
+        text,
+        &line_array,
+        &line_hash,
+        &iter,
+        max_lines,
+    );
+}
+
+/// Split a text into segments.  Reduce the texts to a string of
+/// hashes where each Unicode character represents one segment.
+/// @param text String to encode.
+/// @param segment_array List of unique string segments.
+/// @param line_hash Map of strings to indices into segment_array.
+/// @param iterator Returns the next segment.  Must have functions
+///        next(), returning the next segment, and short_circuit(),
+///        called when max_segments is reached.
+/// @param max_segments Maximum length of lineArray.
+/// @return Encoded string.
+fn diffIteratorToCharsMunge(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    segment_array: *ArrayListUnmanaged([]const u8),
+    segment_hash: *std.StringHashMapUnmanaged(u21),
+    iterator: anytype,
+    max_segments: usize,
+) DiffError![]const u8 {
+    var chars = ArrayListUnmanaged(u8){};
+    defer chars.deinit(allocator);
+    var count = 0;
+    var codepoint: u21 = 32;
+    var char_buf: [4]u8 = undefined;
+    while (iterator.next()) |line| {
+        if (segment_hash.get(line)) |value| {
+            const nbytes = try std.unicode.wtf8Encode(value, &char_buf) catch unreachable;
+            try chars.appendSlice(allocator, char_buf[0..nbytes]);
+            count += line.len;
+        } else {
+            if (codepoint - 32 == max_segments) {
+                // Bail out
+                iterator.short_circuit();
+                const final_line = text[count..];
+                try segment_array.append(allocator, final_line);
+                try segment_hash.put(allocator, final_line, codepoint);
+                const nbytes = try std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
+                try chars.appendSlice(allocator, char_buf[0..nbytes]);
+            }
+            try segment_array.append(allocator, line);
+            try segment_hash.put(allocator, line, codepoint);
+            const nbytes = try std.unicode.wtf8Encode(codepoint, &char_buf) catch unreachable;
+            try chars.appendSlice(allocator, char_buf[0..nbytes]);
+            codepoint += 1;
+        }
+    }
+}
+
+/// Rehydrate the text in a diff from a string of line hashes to real lines
+/// of text.
+/// @param diffs List of Diff objects.
+/// @param lineArray List of unique strings.
+fn diffCharsToLines2(
+    allocator: Allocator,
+    diffs: []Diff,
+    line_array: []const []const u8,
+) DiffError!void {
+    var text = ArrayListUnmanaged(u8){};
+    defer text.deinit(allocator);
+    for (diffs) |*d| {
+        var cursor: usize = 0;
+        while (cursor < d.text.len) {
+            const cp_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch {
+                @panic("Internal decode error in diffsCharsToLines");
+            };
+            const cp = try std.unicode.wtf8Decode(text[cursor..][0..cp_len]) catch {
+                @panic("Internal decode error in diffCharsToLines");
+            };
+            try text.appendSlice(line_array[cp - 32]);
+            cursor += cp_len;
+        }
+        allocator.free(d.text);
+        d.text = try text.toOwnedSlice();
+    }
+}
+
+/// An iteration struct over lines, which includes the newline if present.
+const LineIterator = struct {
+    cursor: usize = 0,
+    text: []const u8,
+
+    pub fn next(iter: *LineIterator) ?[]const u8 {
+        if (iter.cursor == iter.text.len) return null;
+        const maybe_newline = std.mem.indexOfPos(
+            u8,
+            iter.text,
+            iter.cursor,
+            '\n',
+        );
+        if (maybe_newline) |nl| {
+            const line = iter.text[iter.cursor .. nl + 1];
+            iter.cursor = nl + 1;
+            return line;
+        } else {
+            const line = iter.text[iter.cursor..];
+            iter.cursor = iter.text.len;
+            return line;
+        }
+    }
+
+    pub fn short_circuit(iter: *LineIterator) void {
+        iter.cursor = iter.text.len;
+    }
+};
 
 /// Reorder and merge like edit sections.  Merge equalities.
 /// Any edit section can move as long as it doesn't cross an equality.
