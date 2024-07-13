@@ -882,7 +882,13 @@ fn diffLineMode(
                         &.{},
                     );
                     pointer = pointer - count_delete - count_insert;
-                    var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
+                    var sub_diff = try dmp.diffInternal(
+                        allocator,
+                        text_delete.items,
+                        text_insert.items,
+                        false,
+                        deadline,
+                    );
                     defer sub_diff.deinit(allocator);
                     try diffs.insertSlice(allocator, pointer, sub_diff.items);
                     pointer = pointer + sub_diff.items.len;
@@ -1064,6 +1070,7 @@ const LineIterator = struct {
     cursor: usize = 0,
     text: []const u8,
 
+    /// Return the next line, including its newline, if one is present.
     pub fn next(iter: *LineIterator) ?[]const u8 {
         if (iter.cursor == iter.text.len) return null;
         const maybe_newline = std.mem.indexOfScalarPos(
@@ -1436,13 +1443,11 @@ pub fn diffCleanupSemanticLossless(
             // First, shift the edit as far left as possible.
             const common_offset = diffCommonSuffix(equality_1.items, edit.items);
             if (common_offset > 0) {
-                // TODO: Use buffer
                 const common_string = try allocator.dupe(u8, edit.items[edit.items.len - common_offset ..]);
                 defer allocator.free(common_string);
 
                 equality_1.items.len = equality_1.items.len - common_offset;
 
-                // edit.items.len = edit.items.len - common_offset;
                 const not_common = try allocator.dupe(u8, edit.items[0 .. edit.items.len - common_offset]);
                 defer allocator.free(not_common);
 
@@ -1551,10 +1556,8 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     const lineBreak1 = whitespace1 and std.ascii.isControl(char1);
     const lineBreak2 = whitespace2 and std.ascii.isControl(char2);
     const blankLine1 = lineBreak1 and
-        // BLANKLINEEND.IsMatch(one);
         (std.mem.endsWith(u8, one, "\n\n") or std.mem.endsWith(u8, one, "\n\r\n"));
     const blankLine2 = lineBreak2 and
-        // BLANKLINESTART.IsMatch(two);
         (std.mem.startsWith(u8, two, "\n\n") or
         std.mem.startsWith(u8, two, "\r\n\n") or
         std.mem.startsWith(u8, two, "\n\r\n") or
@@ -1584,7 +1587,7 @@ inline fn boolInt(b: bool) u8 {
 }
 
 /// Reduce the number of edits by eliminating operationally trivial
-/// equalities.  TODO this needs tests
+/// equalities.
 pub fn diffCleanupEfficiency(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
@@ -1732,31 +1735,12 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     // I'm going to add a panic just so I know if test cases of any sort
     // trigger this code path.
     // XXX Remove this before merge if it can't be triggered.
-    if (text2[best_idx] >= 0x80 and is_follow(text2[best_idx + 1])) {
+    if (is_follow(text2[best_idx])) {
         if (true) {
             @panic("Your assumption regarding diffCommonOverlap is invalid!");
         }
         // back out
-        assert(best_idx == best);
-        if (!is_follow(text2[best])) {
-            // It's a lead, one back is fine
-            return best - 1;
-        }
-        best -= 1;
-        if (best == 0) return 0;
-        // It's ok to get no overlap, so we ignore malformation:
-        // a bunch of follows could walk back to zero, and that's
-        // fine with us
-        while (is_follow(text2[best])) {
-            best -= 1;
-            if (best == 0) return 0;
-        }
-        // should be a lead, but ASCII is fine, so
-        if (text2[best] < 0x80) {
-            return best;
-        } else {
-            return best - 1;
-        }
+        return fixSplitBackward(text2, best_idx);
     }
     return best_idx;
 }
@@ -2018,125 +2002,6 @@ pub fn matchMain(
     }
 }
 
-// TODO doubling the bits to fit in usize is nice and all, but there's no
-// reason to be limited to that, we have bitsets which can be as large as
-// we'd like.  This could be passed a comptime power-of-two size, and use
-// that to make an ArrayBitSet specialized for several sizes, up to, IDK,
-// 2k?  Then split very large patches only.  64, 256, 512, 1024, 2028, is
-// a nice balance between code size and versatility.
-// Something like this:
-fn matchBitapImproved(
-    dmp: DiffMatchPatch,
-    allocator: Allocator,
-    text: []const u8,
-    pattern: []const u8,
-    loc: usize,
-    UIntType: type,
-) ?usize {
-    assert(pattern.len < @bitSizeOf(UIntType));
-    const ShiftWidth = ShiftSizeForType(UIntType);
-    // Initialise the alphabet.
-    var map = try matchAlphabet(allocator, pattern);
-    defer map.deinit();
-    // Highest score beyond which we give up.
-    var threshold = dmp.threshold;
-    // Is there a nearby exact match? (speedup)
-    var best_loc = std.mem.indexOfPos(u8, text, pattern);
-    if (best_loc) |best| {
-        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
-    }
-    // What about in the other direction? (speedup)
-    const trunc_text = text[0..@min(loc + pattern.len, text.len)];
-    best_loc = std.mem.lastIndexOf(u8, trunc_text, pattern);
-    if (best_loc) |best| {
-        threshold = @min(dmp.matchBitapScore(0, best, loc, pattern), threshold);
-    }
-    // Initialise the bit arrays.
-    const shift: ShiftWidth = @intCast(pattern.len - 1);
-    // 0 for a match for faster bit twiddles
-    const matchmask = ~(1 << shift);
-    best_loc = null;
-    var bin_min: usize = undefined;
-    var bin_mid: usize = undefined;
-    var bin_max = pattern.len + text.len;
-    // null last_rd to simplying freeing memory
-    var last_rd = try allocator.alloc(UIntType, 0);
-    for (0..pattern.len) |d| {
-        // Scan for the best match; each iteration allows for one more error.
-        // Run a binary search to determine how far from 'loc' we can stray at
-        // this error level.
-        bin_min = 0;
-        bin_mid = bin_max;
-        while (bin_min < bin_mid) {
-            if (dmp.matchBitapScore(d, loc + bin_mid, loc, pattern) <= threshold) {
-                bin_min = bin_mid;
-            } else {
-                bin_max = bin_mid;
-            }
-            bin_mid = (bin_max - bin_min) / 2 + bin_min;
-        }
-        // Use the result from this iteration as the maximum for the next.
-        bin_max = bin_mid;
-        var start = @max(1, loc - bin_mid + 1);
-        const finish = @min(loc + bin_mid, text.len) + pattern.len;
-        var rd = try allocator.alloc(UIntType, finish + 2);
-        const dshift: ShiftWidth = @intCast(d);
-        rd[finish + 1] = 1 << dshift;
-        var j = finish;
-        while (j >= start) : (j -= 1) {
-            const char_match: usize = if (text.len <= j - 1 or !map.contains(text[j - 1]))
-                // Out of range.
-                0
-            else
-                map.get(text[j - 1]);
-            if (d == 0) {
-                // First pass: exact match.
-                rd[j] = ((rd[j + 1] << 1)) & char_match;
-            } else {
-                // Subsequent passes: fuzzy match.
-                rd[j] = ((rd[j + 1] << 1)) & char_match & (((last_rd[j + 1] & last_rd[j]) << 1)) & last_rd[j + 1];
-            }
-            if ((rd[j] & matchmask) != 0) {
-                const score = dmp.matchBitapScore(d, j - 1, loc, pattern);
-                // This match will almost certainly be better than any existing
-                // match.  But check anyway.
-                if (score <= threshold) {
-                    // Told you so.
-                    threshold = score;
-                    best_loc = j - 1;
-                    if (best_loc > loc) {
-                        // When passing loc, don't exceed our current distance from loc.
-                        start = @max(1, 2 * loc - best_loc);
-                    } else {
-                        // Already passed loc, downhill from here on in.
-                        break;
-                    }
-                }
-            }
-        }
-        if (dmp.matchBitapScore(d + 1, loc, loc, pattern) > threshold) {
-            // No hope for a (better) match at greater error levels.
-            break;
-        }
-        allocator.free(last_rd);
-        last_rd = rd;
-    }
-    allocator.free(last_rd);
-    return best_loc;
-}
-
-fn ShiftSizeForType(T: type) type {
-    return switch (@typeInfo(T.Int.bits)) {
-        64 => u6,
-        256 => u8,
-        1024 => u9,
-        2048 => u10,
-        else => unreachable,
-    };
-}
-
-const sh_one: u64 = 1;
-
 /// Locate the best instance of `pattern` in `text` near `loc` using the
 /// Bitap algorithm.  Returns -1 if no match found.
 ///
@@ -2310,27 +2175,6 @@ fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.AutoHashMap(u8,
     for (pattern, 0..) |c, i| {
         const shift: u6 = @intCast(pattern.len - i - 1);
         const value: usize = map.get(c).? | (@as(usize, 1) << shift);
-        try map.put(c, value);
-    }
-    return map;
-}
-
-/// Initialise the alphabet for the Bitap algorithm.
-/// @param pattern The text to encode.
-/// @return Hash of character locations.
-fn matchAlphabetImproved(allocator: Allocator, pattern: []const u8, UIntSize: type) !std.HashMap(u8, usize) {
-    const ShiftType = ShiftSizeForType(UIntSize);
-    var map = std.HashMap(u8, usize).init(allocator);
-    errdefer map.deinit();
-    for (pattern) |c| {
-        if (!map.contains(c)) {
-            try map.put(c, 0);
-        }
-    }
-    for (pattern, 0..) |c, i| {
-        const shift: ShiftType = @intCast(pattern.len - i - 1);
-        // TODO I think we want c_mask & ~ 1 << shift here:
-        const value: UIntSize = map.get(c) | (1 << shift);
         try map.put(c, value);
     }
     return map;
