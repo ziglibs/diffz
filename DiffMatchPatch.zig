@@ -5361,57 +5361,89 @@ test "patch from text" {
         testPatchRoundTrip,
         .{"@@ -0,0 +1,3 @@\n+abc\n@@ -0,0 +1,3 @@\n+abc\n"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "Bad\nPatch\nString\n"),
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ foo"),
+}
+
+fn testBadPatchString(allocator: Allocator, patch: []const u8) !void {
+    _ = patchFromText(allocator, patch) catch |e| {
+        switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                try testing.expectEqual(error.BadPatchString, e);
+            },
+        }
+    };
+}
+
+test "error.BadPatchString" {
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"Bad\nPatch\nString\n"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ +no"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ foo"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -no"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ +no"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -1,no"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -no"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ !1,no"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -1,no"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -1,3 +???"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ !1,no"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -1,no"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -1,3 +???"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -1,3 +4,5 ##"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -1,no"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -1,10??"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -1,3 +4,5 ##"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@ -1,10 ?"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -1,10??"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@@ -1,3 +4,5 @!"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -1,10 ?"},
     );
-    try testing.expectError(
-        error.BadPatchString,
-        patchFromText(allocator, "@@@ -1,3 +4,5 +add\n@!"),
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@@ -1,3 +4,5 @!"},
+    );
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@@ -1,3 +4,5 +add\n@!"},
     );
 }
 
