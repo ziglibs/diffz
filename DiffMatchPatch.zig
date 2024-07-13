@@ -1268,30 +1268,31 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
 fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
     var changes = false;
     // Stack of indices where equalities are found.
-    var equalities = ArrayListUnmanaged(isize){};
+    var equalities = ArrayListUnmanaged(usize){};
     defer equalities.deinit(allocator);
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality: ?[]const u8 = null;
-    var pointer: isize = 0; // Index of current position.
+    var pointer: usize = 0; // Index of current position.
     // Number of characters that changed prior to the equality.
     var length_insertions1: usize = 0;
     var length_deletions1: usize = 0;
     // Number of characters that changed after the equality.
     var length_insertions2: usize = 0;
     var length_deletions2: usize = 0;
+    var reset_pointer = false;
     while (pointer < diffs.items.len) {
-        if (diffs.items[@intCast(pointer)].operation == .equal) { // Equality found.
+        if (diffs.items[pointer].operation == .equal) { // Equality found.
             try equalities.append(allocator, pointer);
             length_insertions1 = length_insertions2;
             length_deletions1 = length_deletions2;
             length_insertions2 = 0;
             length_deletions2 = 0;
-            last_equality = diffs.items[@intCast(pointer)].text;
+            last_equality = diffs.items[pointer].text;
         } else { // an insertion or deletion
-            if (diffs.items[@intCast(pointer)].operation == .insert) {
-                length_insertions2 += diffs.items[@intCast(pointer)].text.len;
+            if (diffs.items[pointer].operation == .insert) {
+                length_insertions2 += diffs.items[pointer].text.len;
             } else {
-                length_deletions2 += diffs.items[@intCast(pointer)].text.len;
+                length_deletions2 += diffs.items[pointer].text.len;
             }
             // Eliminate an equality that is smaller or equal to the edits on both
             // sides of it.
@@ -1302,20 +1303,24 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 // Duplicate record.
                 try diffs.ensureUnusedCapacity(allocator, 1);
                 diffs.insertAssumeCapacity(
-                    @intCast(equalities.items[equalities.items.len - 1]),
+                    equalities.items[equalities.items.len - 1],
                     Diff.init(
                         .delete,
                         try allocator.dupe(u8, last_equality.?),
                     ),
                 );
                 // Change second copy to insert.
-                diffs.items[@intCast(equalities.items[equalities.items.len - 1] + 1)].operation = .insert;
+                diffs.items[equalities.items[equalities.items.len - 1] + 1].operation = .insert;
                 // Throw away the equality we just deleted.
                 _ = equalities.pop();
                 if (equalities.items.len > 0) {
                     _ = equalities.pop();
                 }
-                pointer = if (equalities.items.len > 0) equalities.items[equalities.items.len - 1] else -1;
+                if (equalities.items.len > 0) {
+                    pointer = equalities.items[equalities.items.len - 1];
+                } else {
+                    reset_pointer = true;
+                }
                 length_insertions1 = 0; // Reset the counters.
                 length_deletions1 = 0;
                 length_insertions2 = 0;
@@ -1324,7 +1329,12 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                 changes = true;
             }
         }
-        pointer += 1;
+        if (reset_pointer) {
+            pointer = 0;
+            reset_pointer = false;
+        } else {
+            pointer += 1;
+        }
     }
 
     // Normalize the diff.
@@ -1341,11 +1351,11 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
     // Only extract an overlap if it is as big as the edit ahead or behind it.
     pointer = 1;
     while (pointer < diffs.items.len) {
-        if (diffs.items[@intCast(pointer - 1)].operation == .delete and
-            diffs.items[@intCast(pointer)].operation == .insert)
+        if (diffs.items[pointer - 1].operation == .delete and
+            diffs.items[pointer].operation == .insert)
         {
-            const deletion = diffs.items[@intCast(pointer - 1)].text;
-            const insertion = diffs.items[@intCast(pointer)].text;
+            const deletion = diffs.items[pointer - 1].text;
+            const insertion = diffs.items[pointer].text;
             const overlap_length1: usize = diffCommonOverlap(deletion, insertion);
             const overlap_length2: usize = diffCommonOverlap(insertion, deletion);
             if (overlap_length1 >= overlap_length2) {
@@ -1356,16 +1366,16 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Insert an equality and trim the surrounding edits.
                     try diffs.ensureUnusedCapacity(allocator, 1);
                     diffs.insertAssumeCapacity(
-                        @intCast(pointer),
+                        pointer,
                         Diff.init(
                             .equal,
                             try allocator.dupe(u8, insertion[0..overlap_length1]),
                         ),
                     );
-                    diffs.items[@intCast(pointer - 1)].text =
+                    diffs.items[pointer - 1].text =
                         try allocator.dupe(u8, deletion[0 .. deletion.len - overlap_length1]);
                     allocator.free(deletion);
-                    diffs.items[@intCast(pointer + 1)].text =
+                    diffs.items[pointer + 1].text =
                         try allocator.dupe(u8, insertion[overlap_length1..]);
                     allocator.free(insertion);
                     pointer += 1;
@@ -1378,7 +1388,7 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     // Insert an equality and swap and trim the surrounding edits.
                     try diffs.ensureUnusedCapacity(allocator, 1);
                     diffs.insertAssumeCapacity(
-                        @intCast(pointer),
+                        pointer,
                         Diff.init(
                             .equal,
                             try allocator.dupe(u8, deletion[0..overlap_length2]),
@@ -1389,10 +1399,10 @@ fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError
                     const new_plus = try allocator.dupe(u8, deletion[overlap_length2..]);
                     allocator.free(deletion);
                     allocator.free(insertion);
-                    diffs.items[@intCast(pointer - 1)].operation = .insert;
-                    diffs.items[@intCast(pointer - 1)].text = new_minus;
-                    diffs.items[@intCast(pointer + 1)].operation = .delete;
-                    diffs.items[@intCast(pointer + 1)].text = new_plus;
+                    diffs.items[pointer - 1].operation = .insert;
+                    diffs.items[pointer - 1].text = new_minus;
+                    diffs.items[pointer + 1].operation = .delete;
+                    diffs.items[pointer + 1].text = new_plus;
                     pointer += 1;
                 }
             }
