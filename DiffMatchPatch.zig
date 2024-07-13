@@ -5361,11 +5361,6 @@ test "patch from text" {
         testPatchRoundTrip,
         .{"@@ -0,0 +1,3 @@\n+abc\n@@ -0,0 +1,3 @@\n+abc\n"},
     );
-    try std.testing.checkAllAllocationFailures(
-        testing.allocator,
-        testBadPatchString,
-        .{},
-    );
 }
 
 fn testBadPatchString(allocator: Allocator, patch: []const u8) !void {
@@ -5444,6 +5439,11 @@ test "error.BadPatchString" {
         testing.allocator,
         testBadPatchString,
         .{"@@@ -1,3 +4,5 +add\n@!"},
+    );
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testBadPatchString,
+        .{"@@ -0,0 +1,3 @@\n+abc\n@@ -0,0 +1,3 @@\n+abc\n!!!"},
     );
 }
 
