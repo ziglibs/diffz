@@ -2002,6 +2002,8 @@ pub fn matchMain(
     }
 }
 
+const sh_one: u64 = 1;
+
 /// Locate the best instance of `pattern` in `text` near `loc` using the
 /// Bitap algorithm.  Returns -1 if no match found.
 ///
