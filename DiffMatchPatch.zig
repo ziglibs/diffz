@@ -1905,7 +1905,7 @@ pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
 /// @param diffs List of Diff objects.
 /// @return Number of changes.
 ///
-pub fn diffLevenshtein(diffs: DiffList) usize {
+pub fn diffLevenshtein(diffs: DiffList) f64 {
     var inserts: usize = 0;
     var deletes: usize = 0;
     var levenshtein: usize = 0;
@@ -1926,7 +1926,7 @@ pub fn diffLevenshtein(diffs: DiffList) usize {
         }
     }
 
-    return levenshtein + @max(inserts, deletes);
+    return @floatFromInt(levenshtein + @max(inserts, deletes));
 }
 
 test diffLevenshtein {
@@ -2450,7 +2450,12 @@ pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: Diff
 /// is the patched text, the second of which is...
 ///
 /// TODO I'm just going to return a boolean saying whether all patches
-/// were successful.  Rethink this at some point.
+/// were successful.  Rethink this at some point.  Possibility: build up a
+/// patch string with all unsuccessful patches, it's a legible plain-text
+/// format containing the failed edits, which could be converted into a patch
+/// again, or used directly in an error message, or the slop turned up on the
+/// dmp object and the patch reattempted. The delta allows us to adjust any
+/// failed patches so they "fit" the next text.
 ///
 /// @param patches Array of Patch objects
 /// @param text Old text.
@@ -2551,10 +2556,8 @@ pub fn patchApply(
                 );
                 defer deinitDiffList(allocator, &diffs);
                 const t1_l_float: f64 = @floatFromInt(text1.len);
-                // TODO this is the only place diffLevenshtein gets used, so it
-                // should just return a float. Probably requires changing the tests.
-                const levenshtein_float: f64 = @floatFromInt(diffLevenshtein(diffs));
-                const bad_match = levenshtein_float / t1_l_float > dmp.patch_delete_threshold;
+                const levenshtein: f64 = diffLevenshtein(diffs);
+                const bad_match = levenshtein / t1_l_float > dmp.patch_delete_threshold;
                 if (text1.len > m_max_b and bad_match) {
                     // The end points match, but the content is unacceptably bad.
                     // results[x] = false;
