@@ -801,18 +801,6 @@ fn diffBisectSplit(
     return diffs;
 }
 
-inline fn fixSplitForward(text: []const u8, i: usize) usize {
-    var idx = i;
-    while (idx < text.len and is_follow(text[idx])) : (idx += 1) {}
-    return idx;
-}
-
-inline fn fixSplitBackward(text: []const u8, i: usize) usize {
-    var idx = i;
-    if (idx < text.len) while (idx != 0 and is_follow(text[idx])) : (idx -= 1) {};
-    return idx;
-}
-
 /// Do a quick line-level diff on both strings, then rediff the parts for
 /// greater accuracy.
 /// This speedup can produce non-minimal diffs.
@@ -1580,10 +1568,6 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
         return 1;
     }
     return 0;
-}
-
-inline fn boolInt(b: bool) u8 {
-    return @intFromBool(b);
 }
 
 /// Reduce the number of edits by eliminating operationally trivial
@@ -2452,10 +2436,6 @@ pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: Diff
     return try dmp.makePatch(allocator, text1, diffs);
 }
 
-inline fn cast(as: type, val: anytype) as {
-    return @intCast(val);
-}
-
 /// Merge a set of patches onto the text.  Returns a tuple: the first of which
 /// is the patched text, the second of which is...
 ///
@@ -2937,12 +2917,6 @@ pub fn patchFromText(allocator: Allocator, text: []const u8) !PatchList {
     return patches;
 }
 
-fn countDigits(text: []const u8) usize {
-    var idx: usize = 0;
-    while (std.ascii.isDigit(text[idx])) : (idx += 1) {}
-    return idx;
-}
-
 fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patch } {
     var patch = Patch{ .diffs = DiffList{} };
     errdefer patch.deinit(allocator);
@@ -3164,6 +3138,36 @@ fn encodeUri(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     const writer = charlist.writer();
     _ = try writeUriEncoded(writer, text);
     return charlist.toOwnedSlice();
+}
+
+//|
+//| UTILITIES
+//|
+
+inline fn boolInt(b: bool) u8 {
+    return @intFromBool(b);
+}
+
+inline fn fixSplitForward(text: []const u8, i: usize) usize {
+    var idx = i;
+    while (idx < text.len and is_follow(text[idx])) : (idx += 1) {}
+    return idx;
+}
+
+inline fn fixSplitBackward(text: []const u8, i: usize) usize {
+    var idx = i;
+    if (idx < text.len) while (idx != 0 and is_follow(text[idx])) : (idx -= 1) {};
+    return idx;
+}
+
+inline fn cast(as: type, val: anytype) as {
+    return @intCast(val);
+}
+
+fn countDigits(text: []const u8) usize {
+    var idx: usize = 0;
+    while (std.ascii.isDigit(text[idx])) : (idx += 1) {}
+    return idx;
 }
 
 //|
