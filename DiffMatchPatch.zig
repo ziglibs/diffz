@@ -2918,7 +2918,7 @@ pub fn writePatch(writer: anytype, patches: PatchList) !void {
 pub fn patchFromText(allocator: Allocator, text: []const u8) !PatchList {
     if (text.len == 0) return PatchList{};
     var patches = PatchList{};
-    errdefer patches.deinit(allocator);
+    errdefer deinitPatchList(allocator, &patches);
     var cursor: usize = 0;
     while (cursor < text.len) {
         // TODO catch BadPatchString here and print diagnostic
@@ -2937,13 +2937,13 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
     if (std.mem.eql(u8, text[0..4], PATCH_HEAD)) {
         // Parse location and length in before text
         const count = 4 + countDigits(text[4..]);
+        if (count == 4) return error.BadPatchString;
         patch.start1 = std.fmt.parseInt(
             usize,
             text[4..count],
             10,
         ) catch return error.BadPatchString;
         cursor = count;
-        assert(cursor > 4);
         if (text[cursor] != ',') {
             patch.start1 -= 1;
             patch.length1 = 1;
@@ -2955,7 +2955,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
                 text[cursor .. cursor + delta],
                 10,
             ) catch return error.BadPatchString;
-            assert(delta > 0);
+            if (delta == 0) return error.BadPatchString;
             cursor += delta;
             if (patch.length1 != 0) {
                 patch.start1 -= 1;
@@ -2966,7 +2966,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
     if (text[cursor] == ' ' and text[cursor + 1] == '+') {
         cursor += 2;
         const delta1 = countDigits(text[cursor..]);
-        assert(delta1 > 0);
+        if (delta1 == 0) return error.BadPatchString;
         patch.start2 = std.fmt.parseInt(
             usize,
             text[cursor .. cursor + delta1],
@@ -2979,7 +2979,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
         } else {
             cursor += 1;
             const delta2 = countDigits(text[cursor..]);
-            assert(delta2 > 0);
+            if (delta2 == 0) return error.BadPatchString;
             patch.length2 = std.fmt.parseInt(
                 usize,
                 text[cursor .. cursor + delta2],
@@ -2991,7 +2991,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
             }
         }
     } else return error.BadPatchString;
-    if (std.mem.eql(u8, text[cursor .. cursor + 4], PATCH_TAIL)) {
+    if (cursor + 4 <= text.len and std.mem.eql(u8, text[cursor .. cursor + 4], PATCH_TAIL)) {
         cursor += 4;
     } else return error.BadPatchString;
     // Eat the diffs
@@ -3044,7 +3044,8 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
             },
             '@' => { // Start of next patch
                 // back out cursor
-                cursor -= line.len - 1;
+                allocator.free(diff_line);
+                cursor -= line.len + 1;
                 break :patch_loop;
             },
             else => return error.BadPatchString,
@@ -4915,7 +4916,7 @@ test diffIndex {
     }
 }
 
-test "diffPrettyFormat" {
+test diffPrettyFormat {
     const test_deco = DiffDecorations{
         .delete_start = "<+>",
         .delete_end = "</+>",
@@ -5323,6 +5324,13 @@ fn testPatchRoundTrip(allocator: Allocator, patch_in: []const u8) !void {
     try testing.expectEqualStrings(patch_in, patch_out);
 }
 
+test "workshop" {
+    try testPatchRoundTrip(
+        testing.allocator,
+        "@@ -0,0 +1,3 @@\n+abc\n@@ -0,0 +1,3 @@\n+abc\n",
+    );
+}
+
 test "patch from text" {
     const allocator = testing.allocator;
     var p0 = try patchFromText(allocator, "");
@@ -5348,7 +5356,63 @@ test "patch from text" {
         testPatchRoundTrip,
         .{"@@ -0,0 +1,3 @@\n+abc\n"},
     );
-    try testing.expectError(error.BadPatchString, patchFromText(allocator, "Bad\nPatch\nString\n"));
+    try std.testing.checkAllAllocationFailures(
+        testing.allocator,
+        testPatchRoundTrip,
+        .{"@@ -0,0 +1,3 @@\n+abc\n@@ -0,0 +1,3 @@\n+abc\n"},
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "Bad\nPatch\nString\n"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ foo"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ +no"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -no"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -1,no"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ !1,no"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -1,3 +???"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -1,no"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -1,3 +4,5 ##"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -1,10??"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@ -1,10 ?"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@@ -1,3 +4,5 @!"),
+    );
+    try testing.expectError(
+        error.BadPatchString,
+        patchFromText(allocator, "@@@ -1,3 +4,5 +add\n@!"),
+    );
 }
 
 fn testPatchAddContext(
