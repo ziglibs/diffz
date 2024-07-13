@@ -823,7 +823,7 @@ fn diffLineMode(
     const line_array = a.line_array;
 
     var diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
-    errdefer diffs.deinit(allocator);
+    errdefer deinitDiffList(allocator, &diffs);
     // Convert the diff back to original text.
     try diffCharsToLines(allocator, diffs.items, line_array.items);
     // Eliminate freak matches (e.g. blank lines)
@@ -928,6 +928,7 @@ fn diffLinesToChars(
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
     const chars1 = try diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, UNICODE_TWO_THIRDS);
+    errdefer allocator.free(chars1);
     const chars2 = try diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, UNICODE_ONE_THIRD);
     return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
@@ -4003,11 +4004,11 @@ fn testDiff(
 }
 
 test diff {
-    const this: DiffMatchPatch = .{ .diff_timeout = 0 };
+    const dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
 
     //  Null case.
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "",
         .after = "",
         .check_lines = false,
@@ -4016,7 +4017,7 @@ test diff {
 
     //  Equality.
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "abc",
         .after = "abc",
         .check_lines = false,
@@ -4027,7 +4028,7 @@ test diff {
 
     // Simple insertion.
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "abc",
         .after = "ab123c",
         .check_lines = false,
@@ -4040,7 +4041,7 @@ test diff {
 
     // Simple deletion.
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "a123bc",
         .after = "abc",
         .check_lines = false,
@@ -4053,7 +4054,7 @@ test diff {
 
     // Two insertions.
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "abc",
         .after = "a123b456c",
         .check_lines = false,
@@ -4068,7 +4069,7 @@ test diff {
 
     // Two deletions.
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "a123b456c",
         .after = "abc",
         .check_lines = false,
@@ -4083,7 +4084,7 @@ test diff {
 
     // Simple case #1
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "a",
         .after = "b",
         .check_lines = false,
@@ -4095,7 +4096,7 @@ test diff {
 
     // Simple case #2
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "Apples are a fruit.",
         .after = "Bananas are also fruit.",
         .check_lines = false,
@@ -4110,7 +4111,7 @@ test diff {
 
     // Simple case #3
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "ax\t",
         .after = "\u{0680}x\x00",
         .check_lines = false,
@@ -4125,7 +4126,7 @@ test diff {
 
     // Overlap #1
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "1ayb2",
         .after = "abxab",
         .check_lines = false,
@@ -4141,7 +4142,7 @@ test diff {
 
     // Overlap #2
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "abcy",
         .after = "xaxcxabc",
         .check_lines = false,
@@ -4154,7 +4155,7 @@ test diff {
 
     // Overlap #3
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg",
         .after = "a-bcd-efghijklmnopqrs",
         .check_lines = false,
@@ -4173,7 +4174,7 @@ test diff {
 
     // Large equality
     try testing.checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = dmp,
         .before = "a [[Pennsylvania]] and [[New",
         .after = " and [[Pennsylvania]]",
         .check_lines = false,
@@ -4212,30 +4213,44 @@ test diff {
         // OS task swaps or locks up for a second at the wrong moment.
         try testing.expect((with_timout.diff_timeout) * 10000 * 2 > end_time - start_time); // diff: Timeout max.
     }
+}
 
-    {
-        // Test the linemode speedup.
-        // Must be long to pass the 100 char cutoff.
-        const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
-        const b = "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n";
+fn testDiffLineMode(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    before: []const u8,
+    after: []const u8,
+) !void {
+    var diff_checked = try dmp.diff(allocator, before, after, true);
+    defer deinitDiffList(allocator, &diff_checked);
 
-        var diff_checked = try this.diff(allocator, a, b, true);
-        defer deinitDiffList(allocator, &diff_checked);
+    var diff_unchecked = try dmp.diff(allocator, before, after, false);
+    defer deinitDiffList(allocator, &diff_unchecked);
 
-        var diff_unchecked = try this.diff(allocator, a, b, false);
-        defer deinitDiffList(allocator, &diff_unchecked);
+    try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
+}
 
-        try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
-    }
+test "diffLineMode" {
+    const dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
+    const allocator = testing.allocator;
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testDiffLineMode,
+
+        .{
+            dmp,                                                                                                                                                            "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n",
+            "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n",
+        },
+    );
 
     {
         const a = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
         const b = "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
 
-        var diff_checked = try this.diff(allocator, a, b, true);
+        var diff_checked = try dmp.diff(allocator, a, b, true);
         defer deinitDiffList(allocator, &diff_checked);
 
-        var diff_unchecked = try this.diff(allocator, a, b, false);
+        var diff_unchecked = try dmp.diff(allocator, a, b, false);
         defer deinitDiffList(allocator, &diff_unchecked);
 
         try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Single line-mode.
@@ -4246,7 +4261,7 @@ test diff {
         const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
         const b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n";
 
-        var diffs_linemode = try this.diff(allocator, a, b, true);
+        var diffs_linemode = try dmp.diff(allocator, a, b, true);
         defer deinitDiffList(allocator, &diffs_linemode);
 
         const texts_linemode = try rebuildtexts(allocator, diffs_linemode);
@@ -4255,7 +4270,7 @@ test diff {
             allocator.free(texts_linemode[1]);
         }
 
-        var diffs_textmode = try this.diff(allocator, a, b, false);
+        var diffs_textmode = try dmp.diff(allocator, a, b, false);
         defer deinitDiffList(allocator, &diffs_textmode);
 
         const texts_textmode = try rebuildtexts(allocator, diffs_textmode);
