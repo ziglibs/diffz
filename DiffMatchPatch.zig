@@ -913,10 +913,12 @@ const UNICODE_MAX = 0x10ffdf;
 const UNICODE_TWO_THIRDS = 742724;
 const UNICODE_ONE_THIRD = 371355;
 const CHAR_OFFSET = 32;
+
 comptime {
     assert(UNICODE_TWO_THIRDS + UNICODE_ONE_THIRD == UNICODE_MAX);
     assert(UNICODE_TWO_THIRDS + UNICODE_ONE_THIRD + CHAR_OFFSET == 0x10ffff);
 }
+
 /// Split two texts into a list of strings.  Reduce the texts to a string of
 /// hashes where each Unicode character represents one line.
 /// @param text1 First string.
@@ -4235,10 +4237,11 @@ test diff {
 
 fn testDiffLineMode(
     allocator: Allocator,
-    dmp: DiffMatchPatch,
+    dmp: *DiffMatchPatch,
     before: []const u8,
     after: []const u8,
 ) !void {
+    dmp.diff_check_lines_over = 20;
     var diff_checked = try dmp.diff(allocator, before, after, true);
     defer deinitDiffList(allocator, &diff_checked);
 
@@ -4246,18 +4249,19 @@ fn testDiffLineMode(
     defer deinitDiffList(allocator, &diff_unchecked);
 
     try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
+    dmp.diff_check_lines_over = 100;
 }
 
 test "diffLineMode" {
-    const dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
+    var dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
     const allocator = testing.allocator;
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testDiffLineMode,
-
         .{
-            dmp,                                                                                                                                                            "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n",
-            "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n",
+            &dmp,
+            "1234567890\n1234567890\n1234567890",
+            "abcdefghij\nabcdefghij\nabcdefghij",
         },
     );
 
