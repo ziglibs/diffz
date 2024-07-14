@@ -1788,14 +1788,15 @@ fn testDiffCharsToLines(
         expected: []const Diff,
     },
 ) !void {
-    var diffs = try DiffList.initCapacity(allocator, params.diffs.len);
-    defer deinitDiffList(allocator, &diffs);
+    var char_diffs = try DiffList.initCapacity(allocator, params.diffs.len);
+    defer deinitDiffList(allocator, &char_diffs);
 
     for (params.diffs) |item| {
-        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+        char_diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
     }
 
-    try diffCharsToLines(allocator, diffs.items, params.line_array);
+    var diffs = try diffCharsToLines(allocator, &char_diffs, params.line_array);
+    defer deinitDiffList(allocator, &diffs);
 
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
