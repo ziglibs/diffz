@@ -1069,7 +1069,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
 /// Reduce the number of edits by eliminating semantically trivial
 /// equalities.
 /// @param diffs List of Diff objects.
-fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
+pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities = ArrayListUnmanaged(isize){};
