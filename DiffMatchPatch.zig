@@ -821,11 +821,14 @@ fn diffLineMode(
     const text1 = a.chars_1;
     const text2 = a.chars_2;
     const line_array = a.line_array;
-
-    var diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
+    var diffs: DiffList = undefined;
+    {
+        var char_diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
+        defer deinitDiffList(allocator, &char_diffs);
+        // Convert the diff back to original text.
+        diffs = try diffCharsToLines(allocator, &char_diffs, line_array.items);
+    }
     errdefer deinitDiffList(allocator, &diffs);
-    // Convert the diff back to original text.
-    try diffCharsToLines(allocator, diffs.items, line_array.items);
     // Eliminate freak matches (e.g. blank lines)
     try diffCleanupSemantic(allocator, &diffs);
 
@@ -877,8 +880,13 @@ fn diffLineMode(
                         false,
                         deadline,
                     );
+                    {
+                        errdefer deinitDiffList(allocator, &sub_diff);
+                        try diffs.ensureUnusedCapacity(allocator, sub_diff.items.len);
+                    }
                     defer sub_diff.deinit(allocator);
-                    try diffs.insertSlice(allocator, pointer, sub_diff.items);
+                    const new_diff = diffs.addManyAtAssumeCapacity(pointer, sub_diff.items.len);
+                    @memcpy(new_diff, sub_diff.items);
                     pointer = pointer + sub_diff.items.len;
                 }
                 count_insert = 0;
@@ -1032,12 +1040,15 @@ fn diffIteratorToCharsMunge(
 /// @param lineArray List of unique strings.
 fn diffCharsToLines(
     allocator: Allocator,
-    diffs: []Diff,
+    char_diffs: *DiffList,
     line_array: []const []const u8,
-) DiffError!void {
+) DiffError!DiffList {
     var text = ArrayListUnmanaged(u8){};
     defer text.deinit(allocator);
-    for (diffs) |*d| {
+    var diffs = DiffList{};
+    errdefer deinitDiffList(allocator, &diffs);
+    try diffs.ensureUnusedCapacity(allocator, char_diffs.items.len);
+    for (char_diffs.items) |*d| {
         var cursor: usize = 0;
         while (cursor < d.text.len) {
             const cp_len = std.unicode.utf8ByteSequenceLength(d.text[cursor]) catch {
@@ -1049,9 +1060,12 @@ fn diffCharsToLines(
             try text.appendSlice(allocator, line_array[cp - CHAR_OFFSET]);
             cursor += cp_len;
         }
-        allocator.free(d.text);
-        d.text = try text.toOwnedSlice(allocator);
+        diffs.appendAssumeCapacity(Diff.init(
+            d.operation,
+            try text.toOwnedSlice(allocator),
+        ));
     }
+    return diffs;
 }
 
 /// An iteration struct over lines, which includes the newline if present.
@@ -3486,14 +3500,15 @@ fn testDiffCharsToLines(
         expected: []const Diff,
     },
 ) !void {
-    var diffs = try DiffList.initCapacity(allocator, params.diffs.len);
-    defer deinitDiffList(allocator, &diffs);
+    var char_diffs = try DiffList.initCapacity(allocator, params.diffs.len);
+    defer deinitDiffList(allocator, &char_diffs);
 
     for (params.diffs) |item| {
-        diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
+        char_diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
     }
 
-    try diffCharsToLines(allocator, diffs.items, params.line_array);
+    var diffs = try diffCharsToLines(allocator, &char_diffs, params.line_array);
+    defer deinitDiffList(allocator, &diffs);
 
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
