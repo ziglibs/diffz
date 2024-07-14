@@ -703,12 +703,15 @@ fn diffLineMode(
     const text1 = a.chars_1;
     const text2 = a.chars_2;
     const line_array = a.line_array;
-
-    var diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
-    errdefer diffs.deinit(allocator);
-    // Convert the diff back to original text.
-    try diffCharsToLines(allocator, diffs.items, line_array.items);
-    // Eliminate freak matches (e.g. blank lines)
+    var diffs: DiffList = undefined;
+    {
+        var char_diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, deadline);
+        defer deinitDiffList(allocator, &char_diffs);
+        // Convert the diff back to original text.
+        diffs = try diffCharsToLines(allocator, &char_diffs, line_array.items);
+        // Eliminate freak matches (e.g. blank lines)
+    }
+    errdefer deinitDiffList(allocator, &diffs);
     try diffCleanupSemantic(allocator, &diffs);
 
     // Rediff any replacement blocks, this time character-by-character.
@@ -752,8 +755,13 @@ fn diffLineMode(
                     );
                     pointer = pointer - count_delete - count_insert;
                     var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, deadline);
+                    {
+                        errdefer deinitDiffList(allocator, &sub_diff);
+                        try diffs.ensureUnusedCapacity(allocator, sub_diff.items.len);
+                    }
                     defer sub_diff.deinit(allocator);
-                    try diffs.insertSlice(allocator, pointer, sub_diff.items);
+                    const new_diff = diffs.addManyAtAssumeCapacity(pointer, sub_diff.items.len);
+                    @memcpy(new_diff, sub_diff.items);
                     pointer = pointer + sub_diff.items.len;
                 }
                 count_insert = 0;
@@ -806,6 +814,7 @@ fn diffLinesToChars(
 
     // Allocate 2/3rds of the space for text1, the rest for text2.
     const chars1 = try diffLinesToCharsMunge(allocator, text1, &line_array, &line_hash, 170);
+    errdefer allocator.free(chars1);
     const chars2 = try diffLinesToCharsMunge(allocator, text2, &line_array, &line_hash, 255);
     return .{ .chars_1 = chars1, .chars_2 = chars2, .line_array = line_array };
 }
@@ -860,20 +869,23 @@ fn diffLinesToCharsMunge(
 /// @param lineArray List of unique strings.
 fn diffCharsToLines(
     allocator: std.mem.Allocator,
-    diffs: []Diff,
+    char_diffs: *DiffList,
     line_array: []const []const u8,
-) DiffError!void {
+) DiffError!DiffList {
+    var diffs = DiffList{};
+    errdefer deinitDiffList(allocator, &diffs);
+    try diffs.ensureTotalCapacity(allocator, char_diffs.items.len);
     var text = ArrayListUnmanaged(u8){};
     defer text.deinit(allocator);
 
-    for (diffs) |*d| {
+    for (char_diffs.items) |*d| {
         var j: usize = 0;
         while (j < d.text.len) : (j += 1) {
             try text.appendSlice(allocator, line_array[d.text[j]]);
         }
-        allocator.free(d.text);
-        d.text = try text.toOwnedSlice(allocator);
+        diffs.appendAssumeCapacity(Diff.init(d.operation, try text.toOwnedSlice(allocator)));
     }
+    return diffs;
 }
 
 /// Reorder and merge like edit sections.  Merge equalities.
@@ -2568,6 +2580,34 @@ test diff {
         try testing.expectEqualStrings(texts_textmode[0], texts_linemode[0]);
         try testing.expectEqualStrings(texts_textmode[1], texts_linemode[1]);
     }
+}
+
+fn testDiffLineMode(
+    allocator: Allocator,
+    dmp: DiffMatchPatch,
+    before: []const u8,
+    after: []const u8,
+) !void {
+    var diff_checked = try dmp.diff(allocator, before, after, true);
+    defer deinitDiffList(allocator, &diff_checked);
+
+    var diff_unchecked = try dmp.diff(allocator, before, after, false);
+    defer deinitDiffList(allocator, &diff_unchecked);
+
+    try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
+}
+
+test "diffLineMode" {
+    const dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        testDiffLineMode,
+
+        .{
+            dmp,                                                                                                                                                            "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n",
+            "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n",
+        },
+    );
 }
 
 fn testDiffCleanupSemantic(

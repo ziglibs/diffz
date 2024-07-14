@@ -1,0 +1,43 @@
+1/1 DiffMatchPatch.test.diffLineMode...FAIL (OutOfMemory)
+/opt/homebrew/Cellar/zig/0.13.0/lib/zig/std/math.zig:557:21: 0x10053dd17 in mul__anon_4753 (test)
+    if (ov[1] != 0) return error.Overflow;
+                    ^
+/opt/homebrew/Cellar/zig/0.13.0/lib/zig/std/mem/Allocator.zig:210:55: 0x100581e4f in allocWithSizeAndAlignment__anon_8842 (test)
+    const byte_count = math.mul(usize, size, n) catch return Error.OutOfMemory;
+                                                      ^
+/opt/homebrew/Cellar/zig/0.13.0/lib/zig/std/mem/Allocator.zig:193:5: 0x1005c9d9f in alignedAlloc__anon_9677 (test)
+    return self.allocAdvancedWithRetAddr(T, alignment, n, @returnAddress());
+    ^
+/opt/homebrew/Cellar/zig/0.13.0/lib/zig/std/array_list.zig:1081:36: 0x1005aa103 in ensureTotalCapacityPrecise (test)
+                const new_memory = try allocator.alignedAlloc(T, alignment, new_capacity);
+                                   ^
+/opt/homebrew/Cellar/zig/0.13.0/lib/zig/std/array_list.zig:1058:13: 0x100575cbb in ensureTotalCapacity (test)
+            return self.ensureTotalCapacityPrecise(allocator, better_capacity);
+            ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:877:5: 0x1005ac737 in diffCharsToLines (test)
+    try diffs.ensureTotalCapacity(allocator, char_diffs.items.len);
+    ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:711:17: 0x100576c07 in diffLineMode (test)
+        diffs = try diffCharsToLines(allocator, &diffs, line_array.items);
+                ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:336:9: 0x100547497 in diffCompute (test)
+        return dmp.diffLineMode(allocator, before, after, deadline);
+        ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:159:17: 0x10053b7a7 in diffInternal (test)
+    var diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, deadline);
+                ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:98:5: 0x100534b67 in diff (test)
+    return dmp.diffInternal(allocator, before, after, check_lines, deadline);
+    ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:2591:24: 0x100534803 in testDiffLineMode (test)
+    var diff_checked = try dmp.diff(allocator, before, after, true);
+                       ^
+/opt/homebrew/Cellar/zig/0.13.0/lib/zig/std/testing.zig:1073:9: 0x10053522b in checkAllAllocationFailures__anon_2717 (test)
+        try @call(.auto, test_fn, args);
+        ^
+/Users/atman/code/opp/ziglibs/diffz/DiffMatchPatch.zig:2602:5: 0x100535863 in test.diffLineMode (test)
+    try testing.checkAllAllocationFailures(
+    ^
+0 passed; 0 skipped; 1 failed.
+error: the following test command failed with exit code 1:
+/Users/atman/code/opp/ziglibs/diffz/.zig-cache/o/580927a6ec9942a55d66505d04a4eca8/test
