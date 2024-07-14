@@ -23,6 +23,9 @@ diff_timeout: u64 = 1000,
 /// Cost of an empty edit operation in terms of edit characters.
 diff_edit_cost: u16 = 4,
 
+/// Number of bytes in each string needed to trigger a line-based diff
+diff_check_lines_over: u64 = 100,
+
 /// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
 /// This defaults to 0.05, on the premise that the library will mostly be
 /// used in cases where failure is better than a bad patch application.
@@ -448,7 +451,7 @@ fn diffCompute(
         return diffs;
     }
 
-    if (check_lines and before.len > 100 and after.len > 100) {
+    if (check_lines and before.len > dmp.diff_check_lines_over and after.len > dmp.diff_check_lines_over) {
         return dmp.diffLineMode(allocator, before, after, deadline);
     }
     return dmp.diffBisect(allocator, before, after, deadline);
