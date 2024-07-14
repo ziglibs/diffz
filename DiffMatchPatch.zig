@@ -53,6 +53,8 @@ pub const Diff = struct {
 diff_timeout: u64 = 1000,
 /// Cost of an empty edit operation in terms of edit characters.
 diff_edit_cost: u16 = 4,
+/// Number of bytes in each string needed to trigger a line-based diff
+diff_check_lines_over: u64 = 100,
 
 /// At what point is no match declared (0.0 = perfection, 1.0 = very loose).
 match_threshold: f32 = 0.5,
@@ -331,8 +333,7 @@ fn diffCompute(
         try diffs.appendSlice(allocator, diffs_b.items);
         return diffs;
     }
-
-    if (check_lines and before.len > 100 and after.len > 100) {
+    if (check_lines and before.len > dmp.diff_check_lines_over and after.len > dmp.diff_check_lines_over) {
         return dmp.diffLineMode(allocator, before, after, deadline);
     }
 
@@ -2585,10 +2586,11 @@ test diff {
 
 fn testDiffLineMode(
     allocator: Allocator,
-    dmp: DiffMatchPatch,
+    dmp: *DiffMatchPatch,
     before: []const u8,
     after: []const u8,
 ) !void {
+    dmp.diff_check_lines_over = 20;
     var diff_checked = try dmp.diff(allocator, before, after, true);
     defer deinitDiffList(allocator, &diff_checked);
 
@@ -2596,17 +2598,19 @@ fn testDiffLineMode(
     defer deinitDiffList(allocator, &diff_unchecked);
 
     try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
+    dmp.diff_check_lines_over = 100;
 }
 
 test "diffLineMode" {
-    const dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
+    var dmp: DiffMatchPatch = .{ .diff_timeout = 0 };
     try testing.checkAllAllocationFailures(
         testing.allocator,
         testDiffLineMode,
 
         .{
-            dmp,                                                                                                                                                            "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n",
-            "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n",
+            &dmp,
+            "1234567890\n1234567890\n1234567890\n",
+            "abcdefghij\nabcdefghij\nabcdefghij\n",
         },
     );
 }
