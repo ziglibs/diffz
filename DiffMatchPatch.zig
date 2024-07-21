@@ -13,9 +13,6 @@ pub const DiffError = error{
     BadPatchString,
 };
 
-//| XXX This boolean is entirely for calming the compiler down while working
-const XXX = false;
-
 //| Fields
 
 /// Number of milliseconds to map a diff before giving up (0 for infinity).
@@ -5649,51 +5646,49 @@ fn testPatchSplitMax(allocator: Allocator) !void {
     var dmp = DiffMatchPatch{};
     // TODO get some tests which cover the max split we actually use: bitsize(usize)
     dmp.match_max_bits = 32;
-    if (false) {
-        {
-            var patches = try dmp.diffAndMakePatch(
-                allocator,
-                "abcdefghijklmnopqrstuvwxyz01234567890",
-                "XabXcdXefXghXijXklXmnXopXqrXstXuvXwxXyzX01X23X45X67X89X0",
-            );
-            defer deinitPatchList(allocator, &patches);
-            const expected_patch = "@@ -1,32 +1,46 @@\n+X\n ab\n+X\n cd\n+X\n ef\n+X\n gh\n+X\n ij\n+X\n kl\n+X\n mn\n+X\n op\n+X\n qr\n+X\n st\n+X\n uv\n+X\n wx\n+X\n yz\n+X\n 012345\n@@ -25,13 +39,18 @@\n zX01\n+X\n 23\n+X\n 45\n+X\n 67\n+X\n 89\n+X\n 0\n";
-            try dmp.patchSplitMax(allocator, &patches);
-            const patch_text = try patchToText(allocator, patches);
-            defer allocator.free(patch_text);
-            try testing.expectEqualStrings(expected_patch, patch_text);
-        }
-        {
-            var patches = try dmp.diffAndMakePatch(
-                allocator,
-                "abcdef1234567890123456789012345678901234567890123456789012345678901234567890uvwxyz",
-                "abcdefuvwxyz",
-            );
-            defer deinitPatchList(allocator, &patches);
-            const text_before = try patchToText(allocator, patches);
-            defer allocator.free(text_before);
-            try dmp.patchSplitMax(allocator, &patches);
-            const text_after = try patchToText(allocator, patches);
-            defer allocator.free(text_after);
-            try testing.expectEqualStrings(text_before, text_after);
-        }
-        {
-            var patches = try dmp.diffAndMakePatch(
-                allocator,
-                "1234567890123456789012345678901234567890123456789012345678901234567890",
-                "abc",
-            );
-            defer deinitPatchList(allocator, &patches);
-            const pre_patch_text = try patchToText(allocator, patches);
-            defer allocator.free(pre_patch_text);
-            try dmp.patchSplitMax(allocator, &patches);
-            const patch_text = try patchToText(allocator, patches);
-            defer allocator.free(patch_text);
-            try testing.expectEqualStrings(
-                "@@ -1,32 +1,4 @@\n-1234567890123456789012345678\n 9012\n@@ -29,32 +1,4 @@\n-9012345678901234567890123456\n 7890\n@@ -57,14 +1,3 @@\n-78901234567890\n+abc\n",
-                patch_text,
-            );
-        }
+    {
+        var patches = try dmp.diffAndMakePatch(
+            allocator,
+            "abcdefghijklmnopqrstuvwxyz01234567890",
+            "XabXcdXefXghXijXklXmnXopXqrXstXuvXwxXyzX01X23X45X67X89X0",
+        );
+        defer deinitPatchList(allocator, &patches);
+        const expected_patch = "@@ -1,32 +1,46 @@\n+X\n ab\n+X\n cd\n+X\n ef\n+X\n gh\n+X\n ij\n+X\n kl\n+X\n mn\n+X\n op\n+X\n qr\n+X\n st\n+X\n uv\n+X\n wx\n+X\n yz\n+X\n 012345\n@@ -25,13 +39,18 @@\n zX01\n+X\n 23\n+X\n 45\n+X\n 67\n+X\n 89\n+X\n 0\n";
+        try dmp.patchSplitMax(allocator, &patches);
+        const patch_text = try patchToText(allocator, patches);
+        defer allocator.free(patch_text);
+        try testing.expectEqualStrings(expected_patch, patch_text);
+    }
+    {
+        var patches = try dmp.diffAndMakePatch(
+            allocator,
+            "abcdef1234567890123456789012345678901234567890123456789012345678901234567890uvwxyz",
+            "abcdefuvwxyz",
+        );
+        defer deinitPatchList(allocator, &patches);
+        const text_before = try patchToText(allocator, patches);
+        defer allocator.free(text_before);
+        try dmp.patchSplitMax(allocator, &patches);
+        const text_after = try patchToText(allocator, patches);
+        defer allocator.free(text_after);
+        try testing.expectEqualStrings(text_before, text_after);
+    }
+    {
+        var patches = try dmp.diffAndMakePatch(
+            allocator,
+            "1234567890123456789012345678901234567890123456789012345678901234567890",
+            "abc",
+        );
+        defer deinitPatchList(allocator, &patches);
+        const pre_patch_text = try patchToText(allocator, patches);
+        defer allocator.free(pre_patch_text);
+        try dmp.patchSplitMax(allocator, &patches);
+        const patch_text = try patchToText(allocator, patches);
+        defer allocator.free(patch_text);
+        try testing.expectEqualStrings(
+            "@@ -1,32 +1,4 @@\n-1234567890123456789012345678\n 9012\n@@ -29,32 +1,4 @@\n-9012345678901234567890123456\n 7890\n@@ -57,14 +1,3 @@\n-78901234567890\n+abc\n",
+            patch_text,
+        );
     }
     {
         var patches = try dmp.diffAndMakePatch(
@@ -5738,9 +5733,8 @@ fn testPatchAddPadding(
     allocator.free(codes);
     const patch_text_after = try patchToText(allocator, patches);
     defer allocator.free(patch_text_after);
-    if (false) try testing.expectEqualStrings(expect_after, patch_text_after);
+    try testing.expectEqualStrings(expect_after, patch_text_after);
 }
-
 test patchAddPadding {
     // Both edges full.
     try testing.checkAllAllocationFailures(
