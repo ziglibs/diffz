@@ -13,6 +13,8 @@ pub const DiffError = error{
     BadPatchString,
 };
 
+const OutOfMemory = error.OutOfMemory;
+
 //| Fields
 
 /// Number of milliseconds to map a diff before giving up (0 for infinity).
@@ -223,7 +225,7 @@ pub fn diff(
     /// to identify the changed areas. If true, then run
     /// a faster slightly less optimal diff.
     check_lines: bool,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     const deadline = if (dmp.diff_timeout == 0)
         std.math.maxInt(u64)
     else
@@ -238,7 +240,7 @@ fn diffInternal(
     after: []const u8,
     check_lines: bool,
     deadline: u64,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     // Check for equality (speedup).
     if (std.mem.eql(u8, before, after)) {
         var diffs = DiffList{};
@@ -339,7 +341,7 @@ fn diffCompute(
     after: []const u8,
     check_lines: bool,
     deadline: u64,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     if (before.len == 0) {
         // Just add some text (speedup).
         var diffs = DiffList{};
@@ -484,7 +486,7 @@ fn diffHalfMatch(
     allocator: std.mem.Allocator,
     before: []const u8,
     after: []const u8,
-) DiffError!?HalfMatchResult {
+) error{OutOfMemory}!?HalfMatchResult {
     if (dmp.diff_timeout == 0) {
         // Don't risk returning a non-optimal diff if we have unlimited time.
         return null;
@@ -557,7 +559,7 @@ fn diffHalfMatchInternal(
     long_text: []const u8,
     short_text: []const u8,
     i: usize,
-) DiffError!?HalfMatchResult {
+) error{OutOfMemory}!?HalfMatchResult {
     // Start with a 1/4 length Substring at position i as a seed.
     const seed = long_text[i .. i + long_text.len / 4];
     var j: isize = -1;
@@ -623,7 +625,7 @@ fn diffBisect(
     before: []const u8,
     after: []const u8,
     deadline: u64,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     const before_length: isize = @intCast(before.len);
     const after_length: isize = @intCast(after.len);
     const max_d: isize = @intCast((before.len + after.len + 1) / 2);
@@ -778,7 +780,7 @@ fn diffBisectSplit(
     x: isize,
     y: isize,
     deadline: u64,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     const x1 = fixSplitForward(text1, @intCast(x));
     const y1 = fixSplitBackward(text2, @intCast(y));
     const text1a = text1[0..x1];
@@ -814,7 +816,7 @@ fn diffLineMode(
     text1_in: []const u8,
     text2_in: []const u8,
     deadline: u64,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     // Scan the text on a line-by-line basis first.
     var a = try diffLinesToChars(allocator, text1_in, text2_in);
     defer a.deinit(allocator);
@@ -927,7 +929,7 @@ fn diffLinesToChars(
     allocator: std.mem.Allocator,
     text1: []const u8,
     text2: []const u8,
-) DiffError!LinesToCharsResult {
+) error{OutOfMemory}!LinesToCharsResult {
     var line_array = ArrayListUnmanaged([]const u8){};
     errdefer line_array.deinit(allocator);
     line_array.items.len = 0;
@@ -968,7 +970,7 @@ fn diffLinesToCharsMunge(
     line_array: *ArrayListUnmanaged([]const u8),
     line_hash: *std.StringHashMapUnmanaged(u21),
     max_lines: usize,
-) DiffError![]const u8 {
+) error{OutOfMemory}![]const u8 {
     var iter = LineIterator{ .text = text };
     return try diffIteratorToCharsMunge(
         allocator,
@@ -1004,7 +1006,7 @@ fn diffIteratorToCharsMunge(
     segment_hash: *std.StringHashMapUnmanaged(u21),
     iterator: anytype,
     max_segments: usize,
-) DiffError![]const u8 {
+) error{OutOfMemory}![]const u8 {
     // Because we rebase the codepoint off the already counted segments,
     // this makes the unreachables in the function legitimate:
     assert(max_segments <= UNICODE_MAX);
@@ -1044,7 +1046,7 @@ fn diffCharsToLines(
     allocator: Allocator,
     char_diffs: *DiffList,
     line_array: []const []const u8,
-) DiffError!DiffList {
+) error{OutOfMemory}!DiffList {
     var text = ArrayListUnmanaged(u8){};
     defer text.deinit(allocator);
     var diffs = DiffList{};
@@ -1107,7 +1109,7 @@ const LineIterator = struct {
 /// Reorder and merge like edit sections.  Merge equalities.
 /// Any edit section can move as long as it doesn't cross an equality.
 /// @param diffs List of Diff objects.
-fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
+fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) error{OutOfMemory}!void {
     // Add a dummy entry at the end.
     try diffs.append(allocator, Diff.init(.equal, ""));
     var pointer: usize = 0;
@@ -1282,7 +1284,7 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
 /// Reduce the number of edits by eliminating semantically trivial
 /// equalities.
 /// @param diffs List of Diff objects.
-pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
+pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) error{OutOfMemory}!void {
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities = ArrayListUnmanaged(usize){};
@@ -1435,7 +1437,7 @@ pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffE
 pub fn diffCleanupSemanticLossless(
     allocator: std.mem.Allocator,
     diffs: *DiffList,
-) DiffError!void {
+) error{OutOfMemory}!void {
     var pointer: usize = 1;
     // Intentionally ignore the first and last element (don't need checking).
     while (pointer < @as(isize, @intCast(diffs.items.len)) - 1) {
@@ -1603,7 +1605,7 @@ pub fn diffCleanupEfficiency(
     dmp: DiffMatchPatch,
     allocator: std.mem.Allocator,
     diffs: *DiffList,
-) DiffError!void {
+) error{OutOfMemory}!void {
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities = std.ArrayList(usize).init(allocator);
@@ -1888,7 +1890,7 @@ pub fn writeDiffPrettyFormat(
 /// @param diffs List of `Diff` objects.
 /// @return Source text.
 ///
-pub fn diffBeforeText(allocator: Allocator, diffs: DiffList) ![]const u8 {
+pub fn diffBeforeText(allocator: Allocator, diffs: DiffList) error{OutOfMemory}![]const u8 {
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     for (diffs.items) |d| {
@@ -1904,7 +1906,7 @@ pub fn diffBeforeText(allocator: Allocator, diffs: DiffList) ![]const u8 {
 /// @param diffs List of `Diff` objects.
 /// @return Destination text.
 ///
-pub fn diffAfterText(allocator: Allocator, diffs: DiffList) ![]const u8 {
+pub fn diffAfterText(allocator: Allocator, diffs: DiffList) error{OutOfMemory}![]const u8 {
     var chars = ArrayListUnmanaged(u8){};
     defer chars.deinit(allocator);
     for (diffs.items) |d| {
@@ -1995,7 +1997,7 @@ pub fn matchMain(
     text: []const u8,
     pattern: []const u8,
     passed_loc: usize,
-) !?usize {
+) error{OutOfMemory}!?usize {
     // Clamp the loc to fit within text.
     const loc = @min(passed_loc, text.len);
     if (std.mem.eql(u8, text, pattern)) {
@@ -2028,7 +2030,7 @@ fn matchBitap(
     text: []const u8,
     pattern: []const u8,
     loc: usize,
-) !?usize {
+) error{OutOfMemory}!?usize {
     // TODO decide what to do here:
     // assert (Match_MaxBits == 0 || pattern.Length <= Match_MaxBits)
     //    : "Pattern too long for this application.";
@@ -2177,7 +2179,7 @@ fn matchBitapScore(
 /// Initialise the alphabet for the Bitap algorithm.
 /// @param pattern The text to encode.
 /// @return Hash of character locations.
-fn matchAlphabet(allocator: Allocator, pattern: []const u8) !std.AutoHashMap(u8, usize) {
+fn matchAlphabet(allocator: Allocator, pattern: []const u8) error{OutOfMemory}!std.AutoHashMap(u8, usize) {
     var map = std.AutoHashMap(u8, usize).init(allocator);
     errdefer map.deinit();
     for (pattern) |c| {
@@ -2205,7 +2207,7 @@ fn patchAddContext(
     allocator: Allocator,
     patch: *Patch,
     text: []const u8,
-) !void {
+) error{OutOfMemory}!void {
     if (text.len == 0) return;
     // TODO the fixup logic here might make patterns too large?
     // It should be ok, because big patches get broken up.  Hmm.
@@ -2284,7 +2286,7 @@ pub fn diffAndMakePatch(
     allocator: Allocator,
     text1: []const u8,
     text2: []const u8,
-) !PatchList {
+) error{OutOfMemory}!PatchList {
     var diffs = try dmp.diff(allocator, text1, text2, true);
     defer deinitDiffList(allocator, &diffs);
     if (diffs.items.len > 2) {
@@ -2301,7 +2303,7 @@ fn makePatchInternal(
     text: []const u8,
     diffs: DiffList,
     diff_act: DiffHandling,
-) !PatchList {
+) error{OutOfMemory}!PatchList {
     var patches = PatchList{};
     errdefer deinitPatchList(allocator, &patches);
     if (diffs.items.len == 0) {
@@ -2453,11 +2455,15 @@ pub fn makePatch(
     allocator: Allocator,
     text: []const u8,
     diffs: DiffList,
-) !PatchList {
+) error{OutOfMemory}!PatchList {
     return try dmp.makePatchInternal(allocator, text, diffs, .copy);
 }
 
-pub fn makePatchFromDiffs(dmp: DiffMatchPatch, allocator: Allocator, diffs: DiffList) !PatchList {
+pub fn makePatchFromDiffs(
+    dmp: DiffMatchPatch,
+    allocator: Allocator,
+    diffs: DiffList,
+) error{OutOfMemory}!PatchList {
     const text1 = try diffBeforeText(allocator, diffs);
     defer allocator.free(text1);
     return try dmp.makePatch(allocator, text1, diffs);
@@ -2483,7 +2489,7 @@ pub fn patchApply(
     allocator: Allocator,
     og_patches: *PatchList,
     og_text: []const u8,
-) !struct { []const u8, bool } {
+) error{OutOfMemory}!struct { []const u8, bool } {
     if (og_patches.items.len == 0) {
         // As silly as this is, we dupe the text, because something
         // passing an empty patchset isn't going to check, and will
@@ -2625,7 +2631,7 @@ fn patchSplitMax(
     dmp: DiffMatchPatch,
     allocator: Allocator,
     patches: *PatchList,
-) !void {
+) error{OutOfMemory}!void {
     const patch_size = dmp.match_max_bits;
     const patch_margin = dmp.patch_margin;
     const max_patch_len = patch_size - patch_margin;
@@ -2811,7 +2817,7 @@ fn patchAddPadding(
     dmp: DiffMatchPatch,
     allocator: Allocator,
     patches: *PatchList,
-) ![]const u8 {
+) error{OutOfMemory}![]const u8 {
     if (patches.items.len == 0) return "";
     const pad_len = dmp.patch_margin;
     var paddingcodes = try std.ArrayList(u8).initCapacity(allocator, pad_len);
@@ -2899,7 +2905,7 @@ fn patchAddPadding(
 /// Given an array of patches, return another array that is identical.
 /// @param patches Array of Patch objects.
 /// @return Array of Patch objects.
-fn patchListClone(allocator: Allocator, patches: *PatchList) !PatchList {
+fn patchListClone(allocator: Allocator, patches: *PatchList) error{OutOfMemory}!PatchList {
     var new_patches = PatchList{};
     errdefer deinitPatchList(allocator, &new_patches);
     try new_patches.ensureTotalCapacity(allocator, patches.items.len);
@@ -2912,7 +2918,7 @@ fn patchListClone(allocator: Allocator, patches: *PatchList) !PatchList {
 /// Take a list of patches and return a textual representation.
 /// @param patches List of Patch objects.
 /// @return Text representation of patches.
-pub fn patchToText(allocator: Allocator, patches: PatchList) ![]const u8 {
+pub fn patchToText(allocator: Allocator, patches: PatchList) error{OutOfMemory}![]const u8 {
     var text_array = std.ArrayList(u8).init(allocator);
     defer text_array.deinit();
     const writer = text_array.writer();
@@ -2932,7 +2938,7 @@ pub fn writePatch(writer: anytype, patches: PatchList) !void {
 /// @param textline Text representation of patches.
 /// @return List of Patch objects.
 /// @throws ArgumentException If invalid input.
-pub fn patchFromText(allocator: Allocator, text: []const u8) !PatchList {
+pub fn patchFromText(allocator: Allocator, text: []const u8) DiffError!PatchList {
     if (text.len == 0) return PatchList{};
     var patches = PatchList{};
     errdefer deinitPatchList(allocator, &patches);
@@ -2947,7 +2953,7 @@ pub fn patchFromText(allocator: Allocator, text: []const u8) !PatchList {
     return patches;
 }
 
-fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patch } {
+fn patchFromHeader(allocator: Allocator, text: []const u8) DiffError!struct { usize, Patch } {
     var patch = Patch{ .diffs = DiffList{} };
     errdefer patch.deinit(allocator);
     var cursor: usize = undefined;
@@ -3072,7 +3078,7 @@ fn patchFromHeader(allocator: Allocator, text: []const u8) !struct { usize, Patc
 }
 
 /// Decode our URI-esque escaping
-fn decodeUri(allocator: Allocator, line: []const u8) ![]const u8 {
+fn decodeUri(allocator: Allocator, line: []const u8) DiffError![]const u8 {
     if (std.mem.indexOf(u8, line, "%")) |first| {
         // Text to decode.
         // Result will always be shorter than line:
