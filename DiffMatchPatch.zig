@@ -1749,9 +1749,6 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     // trigger this code path.
     // XXX Remove this before merge if it can't be triggered.
     if (is_follow(text2[best_idx])) {
-        if (true) {
-            @panic("Your assumption regarding diffCommonOverlap is invalid!");
-        }
         // back out
         return fixSplitBackward(text2, best_idx);
     }
@@ -2090,7 +2087,6 @@ fn matchBitap(
         bin_max = bin_mid;
         var start: usize = @intCast(@max(1, i_loc - bin_mid + 1));
         const finish: usize = @intCast(@min(i_loc + bin_mid, i_textlen) + i_patlen);
-        // No errors below this point, so no errdefer either:
         var rd: []usize = try allocator.alloc(usize, finish + 2);
         errdefer allocator.free(rd);
         const dshift: u6 = @intCast(d);
