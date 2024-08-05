@@ -788,6 +788,46 @@ fn diffBisectSplit(
     const text1b = text1[x1..];
     const text2b = text2[y1..];
 
+    if (text1a.len == 0 and text2a.len == 0) {
+        var diffs = DiffList{};
+        errdefer deinitDiffList(allocator, &diffs);
+        try diffs.ensureUnusedCapacity(allocator, 2);
+        diffs.appendAssumeCapacity(Diff.init(
+            .delete,
+            try allocator.dupe(
+                u8,
+                text2b,
+            ),
+        ));
+        diffs.appendAssumeCapacity(Diff.init(
+            .insert,
+            try allocator.dupe(
+                u8,
+                text2b,
+            ),
+        ));
+        return diffs;
+    } else if (text1b.len == 0 and text2b.len == 0) {
+        var diffs = DiffList{};
+        errdefer deinitDiffList(allocator, &diffs);
+        try diffs.ensureUnusedCapacity(allocator, 2);
+        diffs.appendAssumeCapacity(Diff.init(
+            .delete,
+            try allocator.dupe(
+                u8,
+                text2a,
+            ),
+        ));
+        diffs.appendAssumeCapacity(Diff.init(
+            .insert,
+            try allocator.dupe(
+                u8,
+                text2a,
+            ),
+        ));
+        return diffs;
+    }
+
     // Compute both diffs serially.
     var diffs = try dmp.diffInternal(allocator, text1a, text2a, false, deadline);
     errdefer deinitDiffList(allocator, &diffs);
@@ -4589,6 +4629,32 @@ test "Unicode diffs" {
                 },
             },
         );
+    }
+    {
+        const before = "<r>red</r> <t></t><b>blue</b><t> </t><g>green</g><t></t> <y>yellow</y>";
+        const after = "<r>red</r>♦︎ <b>blue</b>♦︎<t>∅ </t><g>green</g>♦︎<t>∅</t>♦︎ <y>yellow</y>";
+        var diffs = try dmp.diff(allocator, before, after, false);
+        defer deinitDiffList(allocator, &diffs);
+    }
+}
+
+test "Workshop" {
+    const allocator = std.testing.allocator;
+    var dmp = DiffMatchPatch{};
+    dmp.diff_timeout = 0;
+    {
+        const before = "<r>red</r> <t></t><b>blue</b><t> </t><g>green</g><t></t> <y>yellow</y>";
+        const after = "<r>red</r>♦︎ <b>blue</b>♦︎<t>∅ </t><g>green</g>♦︎<t>∅</t>♦︎ <y>yellow</y>";
+        var diffs = try dmp.diff(allocator, before, after, false);
+        defer deinitDiffList(allocator, &diffs);
+        for (diffs.items) |a_diff| {
+            std.debug.print("{}\n", .{a_diff});
+            std.debug.print("  {any}\n", .{a_diff.text});
+        }
+        const before_2 = try diffBeforeText(allocator, diffs);
+        std.debug.print("{s}\n", .{before_2});
+        defer allocator.free(before_2);
+        try testing.expectEqualStrings(before, before_2);
     }
 }
 
