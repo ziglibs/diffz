@@ -796,7 +796,7 @@ fn diffBisectSplit(
             .delete,
             try allocator.dupe(
                 u8,
-                text2b,
+                text1b,
             ),
         ));
         diffs.appendAssumeCapacity(Diff.init(
@@ -815,7 +815,7 @@ fn diffBisectSplit(
             .delete,
             try allocator.dupe(
                 u8,
-                text2a,
+                text2b,
             ),
         ));
         diffs.appendAssumeCapacity(Diff.init(
@@ -4635,26 +4635,12 @@ test "Unicode diffs" {
         const after = "<r>red</r>♦︎ <b>blue</b>♦︎<t>∅ </t><g>green</g>♦︎<t>∅</t>♦︎ <y>yellow</y>";
         var diffs = try dmp.diff(allocator, before, after, false);
         defer deinitDiffList(allocator, &diffs);
-    }
-}
-
-test "Workshop" {
-    const allocator = std.testing.allocator;
-    var dmp = DiffMatchPatch{};
-    dmp.diff_timeout = 0;
-    {
-        const before = "<r>red</r> <t></t><b>blue</b><t> </t><g>green</g><t></t> <y>yellow</y>";
-        const after = "<r>red</r>♦︎ <b>blue</b>♦︎<t>∅ </t><g>green</g>♦︎<t>∅</t>♦︎ <y>yellow</y>";
-        var diffs = try dmp.diff(allocator, before, after, false);
-        defer deinitDiffList(allocator, &diffs);
-        for (diffs.items) |a_diff| {
-            std.debug.print("{}\n", .{a_diff});
-            std.debug.print("  {any}\n", .{a_diff.text});
-        }
         const before_2 = try diffBeforeText(allocator, diffs);
-        std.debug.print("{s}\n", .{before_2});
         defer allocator.free(before_2);
         try testing.expectEqualStrings(before, before_2);
+        const after_2 = try diffAfterText(allocator, diffs);
+        defer allocator.free(after_2);
+        try testing.expectEqualStrings(after, after_2);
     }
 }
 
