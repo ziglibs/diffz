@@ -347,8 +347,6 @@ const HalfMatchResult = struct {
     suffix_after: []const u8,
     common_middle: []const u8,
 
-    // TODO maybe check for empty slice here for fewer copies,
-    // as in, maybe we can transfer ownership and replace with "".
     pub fn deinit(hmr: HalfMatchResult, alloc: Allocator) void {
         alloc.free(hmr.prefix_before);
         alloc.free(hmr.suffix_before);
@@ -1378,10 +1376,6 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
     return 0;
 }
 
-inline fn boolInt(b: bool) u8 {
-    return @intFromBool(b);
-}
-
 /// Reduce the number of edits by eliminating operationally trivial
 /// equalities.
 pub fn diffCleanupEfficiency(
@@ -1435,7 +1429,7 @@ pub fn diffCleanupEfficiency(
             if ((last_equality.len != 0) and
                 ((pre_ins and pre_del and post_ins and post_del) or
                 ((last_equality.len < dmp.diff_edit_cost / 2) and
-                (boolInt(pre_ins) + boolInt(pre_del) + boolInt(post_ins) + boolInt(post_del) == 3))))
+                (@as(u8, @intFromBool(pre_ins)) + @as(u8, @intFromBool(pre_del)) + @as(u8, @intFromBool(post_ins)) + @as(u8, @intFromBool(post_del)) == 3))))
             {
                 // Duplicate record.
                 try diffs.ensureUnusedCapacity(allocator, 1);

@@ -10,16 +10,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Run tests
     const tests = b.addTest(.{
         .name = "tests",
         .root_source_file = b.path("DiffMatchPatch.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const step_tests = b.addRunArtifact(tests);
+    const run_tests = b.addRunArtifact(tests);
 
-    b.step("test", "Run diffz tests").dependOn(&step_tests.step);
+    const test_step = b.step("test", "Run all the tests");
+    test_step.dependOn(&run_tests.step);
 
     const addOutputDirectoryArg = comptime if (@import("builtin").zig_version.order(.{ .major = 0, .minor = 13, .patch = 0 }) == .lt)
         std.Build.Step.Run.addOutputFileArg
