@@ -127,8 +127,9 @@ fn diffInternal(
     check_lines: bool,
     deadline: u64,
 ) DiffError!DiffList {
-    // Check for equality (speedup).
-    if (std.mem.eql(u8, before, after)) {
+    // Trim off common prefix (speedup).
+    const common_prefix_length = std.mem.indexOfDiff(u8, before, after) orelse {
+        // equality
         var diffs: DiffList = .empty;
         errdefer deinitDiffList(allocator, &diffs);
         if (before.len != 0) {
@@ -139,19 +140,17 @@ fn diffInternal(
             });
         }
         return diffs;
-    }
+    };
 
-    // Trim off common prefix (speedup).
-    var common_length = diffCommonPrefix(before, after);
-    const common_prefix = before[0..common_length];
-    var trimmed_before = before[common_length..];
-    var trimmed_after = after[common_length..];
+    const common_prefix = before[0..common_prefix_length];
+    var trimmed_before = before[common_prefix_length..];
+    var trimmed_after = after[common_prefix_length..];
 
     // Trim off common suffix (speedup).
-    common_length = diffCommonSuffix(trimmed_before, trimmed_after);
-    const common_suffix = trimmed_before[trimmed_before.len - common_length ..];
-    trimmed_before = trimmed_before[0 .. trimmed_before.len - common_length];
-    trimmed_after = trimmed_after[0 .. trimmed_after.len - common_length];
+    const common_suffix_length = diffCommonSuffix(trimmed_before, trimmed_after);
+    const common_suffix = trimmed_before[trimmed_before.len - common_suffix_length ..];
+    trimmed_before = trimmed_before[0 .. trimmed_before.len - common_suffix_length];
+    trimmed_after = trimmed_after[0 .. trimmed_after.len - common_suffix_length];
 
     // Compute the diff on the middle block.
     var diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, deadline);
@@ -178,17 +177,16 @@ fn diffInternal(
     return diffs;
 }
 
-fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
-    const n = @min(before.len, after.len);
-    var i: usize = 0;
-
-    while (i < n) : (i += 1) {
-        if (before[i] != after[i]) {
-            return i;
-        }
+fn indexOfDiff(comptime T: type, a: []const T, b: []const T) ?usize {
+    const shortest = @min(a.len, b.len);
+    for (a[0..shortest], b[0..shortest], 0..) |a_char, b_char, index| {
+        if (a_char != b_char) return index;
     }
+    return if (a.len == b.len) null else shortest;
+}
 
-    return n;
+fn diffCommonPrefix(before: []const u8, after: []const u8) usize {
+    return indexOfDiff(u8, before, after) orelse @min(before.len, after.len);
 }
 
 fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
