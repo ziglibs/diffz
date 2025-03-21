@@ -1,7 +1,7 @@
 .{
-    .name = "diffz",
+    .name = .diffz,
     .version = "0.0.1",
-    .minimum_zig_version = "0.12.0",
+    .minimum_zig_version = "0.14.0",
     .paths = .{
         "DiffMatchPatch.zig",
         "LICENSE",
@@ -9,4 +9,5 @@
         "build.zig.zon",
         "build.zig",
     },
+    .fingerprint = 0x23937d8821656b1b, // Changing this has security and trust implications.
 }
