@@ -456,7 +456,7 @@ fn diffHalfMatchInternal(
         const prefix_length = diffCommonPrefix(long_text[i..], short_text[@as(usize, @intCast(j))..]);
         const suffix_length = diffCommonSuffix(long_text[0..i], short_text[0..@as(usize, @intCast(j))]);
         if (best_common.items.len < suffix_length + prefix_length) {
-            best_common.items.len = 0;
+            best_common.clearRetainingCapacity();
             const a = short_text[@as(usize, @intCast(j - @as(isize, @intCast(suffix_length)))) .. @as(usize, @intCast(j - @as(isize, @intCast(suffix_length)))) + suffix_length];
             try best_common.appendSlice(allocator, a);
             const b = short_text[@as(usize, @intCast(j)) .. @as(usize, @intCast(j)) + prefix_length];
@@ -760,8 +760,8 @@ fn diffLineMode(
                 }
                 count_insert = 0;
                 count_delete = 0;
-                text_delete.items.len = 0;
-                text_insert.items.len = 0;
+                text_delete.clearRetainingCapacity();
+                text_insert.clearRetainingCapacity();
             },
         }
         pointer += 1;
@@ -995,8 +995,8 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
                 }
                 count_insert = 0;
                 count_delete = 0;
-                text_delete.items.len = 0;
-                text_insert.items.len = 0;
+                text_delete.clearRetainingCapacity();
+                text_insert.clearRetainingCapacity();
             },
         }
     }
@@ -1274,13 +1274,13 @@ pub fn diffCleanupSemanticLossless(
                 if (score >= best_score) {
                     best_score = score;
 
-                    best_equality_1.items.len = 0;
+                    best_equality_1.clearRetainingCapacity();
                     try best_equality_1.appendSlice(allocator, equality_1.items);
 
-                    best_edit.items.len = 0;
+                    best_edit.clearRetainingCapacity();
                     try best_edit.appendSlice(allocator, edit.items);
 
-                    best_equality_2.items.len = 0;
+                    best_equality_2.clearRetainingCapacity();
                     try best_equality_2.appendSlice(allocator, equality_2.items);
                 }
             }
@@ -1401,7 +1401,7 @@ pub fn diffCleanupEfficiency(
                 last_equality = diffs.items[pointer].text;
             } else {
                 // Not a candidate, and can never become one.
-                equalities.items.len = 0;
+                equalities.clearRetainingCapacity();
                 last_equality = "";
             }
             post_ins = false;
@@ -1440,7 +1440,7 @@ pub fn diffCleanupEfficiency(
                     // No changes made which could affect previous entry, keep going.
                     post_ins = true;
                     post_del = true;
-                    equalities.items.len = 0;
+                    equalities.clearRetainingCapacity();
                 } else {
                     if (equalities.items.len > 0) {
                         _ = equalities.pop();
@@ -1708,7 +1708,7 @@ test diffLinesToChars {
     try testing.expectEqualStrings("\u{0002}\u{0001}\u{0002}", result.chars_2); // Shared lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
 
-    tmp_array_list.items.len = 0;
+    tmp_array_list.clearRetainingCapacity();
     try tmp_array_list.append(allocator, "");
     try tmp_array_list.append(allocator, "alpha\r\n");
     try tmp_array_list.append(allocator, "beta\r\n");
@@ -1720,7 +1720,7 @@ test diffLinesToChars {
     try testing.expectEqualStrings("\u{0001}\u{0002}\u{0003}\u{0003}", result.chars_2); // Empty string and blank lines #2
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
 
-    tmp_array_list.items.len = 0;
+    tmp_array_list.clearRetainingCapacity();
     try tmp_array_list.append(allocator, "");
     try tmp_array_list.append(allocator, "a");
     try tmp_array_list.append(allocator, "b");
@@ -1742,7 +1742,7 @@ test diffLinesToChars {
     // take care of the problem, but I don't like it.
 
     const n: u8 = 255;
-    tmp_array_list.items.len = 0;
+    tmp_array_list.clearRetainingCapacity();
 
     var line_list: std.ArrayListUnmanaged(u8) = .empty;
     defer line_list.deinit(allocator);
