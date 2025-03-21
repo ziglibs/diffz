@@ -1377,8 +1377,8 @@ pub fn diffCleanupEfficiency(
 ) DiffError!void {
     var changes = false;
     // Stack of indices where equalities are found.
-    var equalities = std.ArrayList(usize).init(allocator);
-    defer equalities.deinit();
+    var equalities: std.ArrayListUnmanaged(usize) = .empty;
+    defer equalities.deinit(allocator);
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality: []const u8 = "";
     var ipointer: isize = 0; // Index of current position.
@@ -1395,7 +1395,7 @@ pub fn diffCleanupEfficiency(
         if (diffs.items[pointer].operation == .equal) { // Equality found.
             if (diffs.items[pointer].text.len < dmp.diff_edit_cost and (post_ins or post_del)) {
                 // Candidate found.
-                try equalities.append(pointer);
+                try equalities.append(allocator, pointer);
                 pre_ins = post_ins;
                 pre_del = post_del;
                 last_equality = diffs.items[pointer].text;
@@ -1697,11 +1697,11 @@ test diffHalfMatch {
 test diffLinesToChars {
     const allocator = testing.allocator;
     // Convert lines down to characters.
-    var tmp_array_list = std.ArrayList([]const u8).init(allocator);
-    defer tmp_array_list.deinit();
-    try tmp_array_list.append("");
-    try tmp_array_list.append("alpha\n");
-    try tmp_array_list.append("beta\n");
+    var tmp_array_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer tmp_array_list.deinit(allocator);
+    try tmp_array_list.append(allocator, "");
+    try tmp_array_list.append(allocator, "alpha\n");
+    try tmp_array_list.append(allocator, "beta\n");
 
     var result = try diffLinesToChars(allocator, "alpha\nbeta\nalpha\n", "beta\nalpha\nbeta\n");
     try testing.expectEqualStrings("\u{0001}\u{0002}\u{0001}", result.chars_1); // Shared lines #1
@@ -1709,10 +1709,10 @@ test diffLinesToChars {
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Shared lines #3
 
     tmp_array_list.items.len = 0;
-    try tmp_array_list.append("");
-    try tmp_array_list.append("alpha\r\n");
-    try tmp_array_list.append("beta\r\n");
-    try tmp_array_list.append("\r\n");
+    try tmp_array_list.append(allocator, "");
+    try tmp_array_list.append(allocator, "alpha\r\n");
+    try tmp_array_list.append(allocator, "beta\r\n");
+    try tmp_array_list.append(allocator, "\r\n");
     result.deinit(allocator);
 
     result = try diffLinesToChars(allocator, "", "alpha\r\nbeta\r\n\r\n\r\n");
@@ -1721,9 +1721,9 @@ test diffLinesToChars {
     try testing.expectEqualDeep(tmp_array_list.items, result.line_array.items); // Empty string and blank lines #3
 
     tmp_array_list.items.len = 0;
-    try tmp_array_list.append("");
-    try tmp_array_list.append("a");
-    try tmp_array_list.append("b");
+    try tmp_array_list.append(allocator, "");
+    try tmp_array_list.append(allocator, "a");
+    try tmp_array_list.append(allocator, "b");
     result.deinit(allocator);
 
     result = try diffLinesToChars(allocator, "a", "b");
@@ -1744,20 +1744,20 @@ test diffLinesToChars {
     const n: u8 = 255;
     tmp_array_list.items.len = 0;
 
-    var line_list = std.ArrayList(u8).init(allocator);
-    defer line_list.deinit();
-    var char_list = std.ArrayList(u8).init(allocator);
-    defer char_list.deinit();
+    var line_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer line_list.deinit(allocator);
+    var char_list: std.ArrayListUnmanaged(u8) = .empty;
+    defer char_list.deinit(allocator);
 
     var i: u8 = 1;
     while (i < n) : (i += 1) {
-        try tmp_array_list.append(&.{ i, '\n' });
-        try line_list.appendSlice(&.{ i, '\n' });
-        try char_list.append(i);
+        try tmp_array_list.append(allocator, &.{ i, '\n' });
+        try line_list.appendSlice(allocator, &.{ i, '\n' });
+        try char_list.append(allocator, i);
     }
     try testing.expectEqual(@as(usize, n - 1), tmp_array_list.items.len); // Test initialization fail #1
     try testing.expectEqual(@as(usize, n - 1), char_list.items.len); // Test initialization fail #2
-    try tmp_array_list.insert(0, "");
+    try tmp_array_list.insert(allocator, 0, "");
     result = try diffLinesToChars(allocator, line_list.items, "");
     defer result.deinit(allocator);
     // TODO: This isn't equal, should it be?
