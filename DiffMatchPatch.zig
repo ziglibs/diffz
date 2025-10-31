@@ -1,8 +1,11 @@
 const DiffMatchPatch = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
+const time = std.time;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 /// DMP with default configuration options
 pub const default: DiffMatchPatch = .{};
@@ -17,7 +20,7 @@ pub const Diff = struct {
     operation: Operation,
     text: []const u8,
 
-    pub fn format(value: Diff, _: anytype, _: anytype, writer: anytype) !void {
+    pub fn format(value: Diff, writer: *Io.Writer) Io.Writer.Error!void {
         try writer.print("({s}, \"{s}\")", .{
             switch (value.operation) {
                 .equal => "=",
@@ -69,7 +72,7 @@ patch_delete_threshold: f32 = 0.5,
 /// Chunk size for context length.
 patch_margin: u16 = 4,
 
-pub const DiffError = error{OutOfMemory};
+pub const DiffError = error{ OutOfMemory, SystemClockUnavailable };
 
 /// Find the differences between two texts.  The return value
 /// must be freed with `deinitDiffList(allocator, &diffs)`.
@@ -89,11 +92,25 @@ pub fn diff(
     /// a faster slightly less optimal diff.
     check_lines: bool,
 ) DiffError!DiffList {
-    const deadline = if (dmp.diff_timeout == 0)
-        std.math.maxInt(u64)
-    else
-        @as(u64, @intCast(std.time.milliTimestamp())) + dmp.diff_timeout;
+    const deadline =
+        if (dmp.diff_timeout == 0)
+            std.math.maxInt(u64)
+        else
+            try timestampMilli() + dmp.diff_timeout;
+
     return dmp.diffInternal(allocator, before, after, check_lines, deadline);
+}
+
+fn timestampMilli() DiffError!u64 {
+    const instant = time.Instant.now() catch return DiffError.SystemClockUnavailable;
+    const timestamp = instant.since(.{ .timestamp = switch (builtin.os.tag) {
+        .windows, .uefi, .wasi => 0,
+        else => .{
+            .sec = 0,
+            .nsec = 0,
+        },
+    } });
+    return @as(u64, @intCast(timestamp / time.ns_per_ms));
 }
 
 const DiffList = std.ArrayListUnmanaged(Diff);
@@ -536,7 +553,7 @@ fn diffBisect(
     var d: isize = 0;
     while (d < max_d) : (d += 1) {
         // Bail out if deadline is reached.
-        if (@as(u64, @intCast(std.time.milliTimestamp())) > deadline) {
+        if (try timestampMilli() > deadline) {
             break;
         }
 
@@ -2497,12 +2514,12 @@ test diff {
             .diff_timeout = 100, // 100ms
         };
 
-        const start_time = std.time.milliTimestamp();
+        const start_time = try timestampMilli();
         {
             var time_diff = try with_timout.diff(allocator, a, b, false);
             defer deinitDiffList(allocator, &time_diff);
         }
-        const end_time = std.time.milliTimestamp();
+        const end_time = try timestampMilli();
 
         // Test that we took at least the timeout period.
         try testing.expect(with_timout.diff_timeout <= end_time - start_time); // diff: Timeout min.
