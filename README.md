@@ -11,7 +11,7 @@ Currently implemented:
 ## Installation
 
 > [!NOTE]
-> The minimum supported Zig version is `0.14.0`.
+> The supported Zig version is `0.15.x`.
 
 ```bash
 # Initialize a `zig build` project if you haven't already

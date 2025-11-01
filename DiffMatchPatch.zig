@@ -1,8 +1,8 @@
-const DiffMatchPatch = @This();
-
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
+
+const DiffMatchPatch = @This();
 
 /// DMP with default configuration options
 pub const default: DiffMatchPatch = .{};
@@ -17,7 +17,7 @@ pub const Diff = struct {
     operation: Operation,
     text: []const u8,
 
-    pub fn format(value: Diff, _: anytype, _: anytype, writer: anytype) !void {
+    pub fn format(value: Diff, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("({s}, \"{s}\")", .{
             switch (value.operation) {
                 .equal => "=",
@@ -80,8 +80,8 @@ pub const DiffError = error{OutOfMemory};
 ///     If true, then run a faster slightly less optimal diff.
 /// @return List of Diff objects.
 pub fn diff(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     /// If false, then don't run a line-level diff first
@@ -96,9 +96,9 @@ pub fn diff(
     return dmp.diffInternal(allocator, before, after, check_lines, deadline);
 }
 
-const DiffList = std.ArrayListUnmanaged(Diff);
+const DiffList = std.ArrayList(Diff);
 
-/// Deinit an `std.ArrayListUnmanaged(Diff)` and the allocated slices of
+/// Deinit an `std.ArrayList(Diff)` and the allocated slices of
 /// text in each `Diff`.
 pub fn deinitDiffList(allocator: Allocator, diffs: *DiffList) void {
     defer diffs.deinit(allocator);
@@ -120,8 +120,8 @@ fn freeRangeDiffList(
 }
 
 fn diffInternal(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     check_lines: bool,
@@ -212,8 +212,8 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
 /// @param deadline Time when the diff should be complete by.
 /// @return List of Diff objects.
 fn diffCompute(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     check_lines: bool,
@@ -357,8 +357,8 @@ const HalfMatchResult = struct {
 ///     suffix of text1, the prefix of text2, the suffix of text2 and the
 ///     common middle.  Or null if there was no match.
 fn diffHalfMatch(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     before: []const u8,
     after: []const u8,
 ) DiffError!?HalfMatchResult {
@@ -430,7 +430,7 @@ fn diffHalfMatch(
 ///     and the common middle.  Or null if there was no match.
 fn diffHalfMatchInternal(
     _: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     long_text: []const u8,
     short_text: []const u8,
     i: usize,
@@ -439,7 +439,7 @@ fn diffHalfMatchInternal(
     const seed = long_text[i .. i + long_text.len / 4];
     var j: isize = -1;
 
-    var best_common: std.ArrayListUnmanaged(u8) = .empty;
+    var best_common: std.ArrayList(u8) = .empty;
     defer best_common.deinit(allocator);
     var best_long_text_a: []const u8 = "";
     var best_long_text_b: []const u8 = "";
@@ -496,8 +496,8 @@ fn diffHalfMatchInternal(
 /// @param deadline Time at which to bail if not yet complete.
 /// @return List of Diff objects.
 fn diffBisect(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     deadline: u64,
@@ -508,10 +508,10 @@ fn diffBisect(
     const v_offset = max_d;
     const v_length = 2 * max_d;
 
-    var v1: std.ArrayListUnmanaged(isize) = try .initCapacity(allocator, @intCast(v_length));
+    var v1: std.ArrayList(isize) = try .initCapacity(allocator, @intCast(v_length));
     defer v1.deinit(allocator);
     v1.items.len = @intCast(v_length);
-    var v2: std.ArrayListUnmanaged(isize) = try .initCapacity(allocator, @intCast(v_length));
+    var v2: std.ArrayList(isize) = try .initCapacity(allocator, @intCast(v_length));
     defer v2.deinit(allocator);
     v2.items.len = @intCast(v_length);
 
@@ -646,8 +646,8 @@ fn diffBisect(
 /// @param deadline Time at which to bail if not yet complete.
 /// @return LinkedList of Diff objects.
 fn diffBisectSplit(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     text1: []const u8,
     text2: []const u8,
     x: isize,
@@ -682,8 +682,8 @@ fn diffBisectSplit(
 /// @param deadline Time when the diff should be complete by.
 /// @return List of Diff objects.
 fn diffLineMode(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     text1_in: []const u8,
     text2_in: []const u8,
     deadline: u64,
@@ -712,8 +712,8 @@ fn diffLineMode(
     var pointer: usize = 0;
     var count_delete: usize = 0;
     var count_insert: usize = 0;
-    var text_delete: std.ArrayListUnmanaged(u8) = .empty;
-    var text_insert: std.ArrayListUnmanaged(u8) = .empty;
+    var text_delete: std.ArrayList(u8) = .empty;
+    var text_insert: std.ArrayList(u8) = .empty;
     defer {
         text_delete.deinit(allocator);
         text_insert.deinit(allocator);
@@ -771,7 +771,7 @@ fn diffLineMode(
 const LinesToCharsResult = struct {
     chars_1: []const u8,
     chars_2: []const u8,
-    line_array: std.ArrayListUnmanaged([]const u8),
+    line_array: std.ArrayList([]const u8),
 
     pub fn deinit(self: *LinesToCharsResult, allocator: Allocator) void {
         allocator.free(self.chars_1);
@@ -788,11 +788,11 @@ const LinesToCharsResult = struct {
 ///     encoded text2 and the List of unique strings.  The zeroth element
 ///     of the List of unique strings is intentionally blank.
 fn diffLinesToChars(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     text1: []const u8,
     text2: []const u8,
 ) DiffError!LinesToCharsResult {
-    var line_array: std.ArrayListUnmanaged([]const u8) = .empty;
+    var line_array: std.ArrayList([]const u8) = .empty;
     errdefer line_array.deinit(allocator);
     var line_hash: std.StringHashMapUnmanaged(usize) = .empty;
     defer line_hash.deinit(allocator);
@@ -818,15 +818,15 @@ fn diffLinesToChars(
 /// @param maxLines Maximum length of lineArray.
 /// @return Encoded string.
 fn diffLinesToCharsMunge(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     text: []const u8,
-    line_array: *std.ArrayListUnmanaged([]const u8),
+    line_array: *std.ArrayList([]const u8),
     line_hash: *std.StringHashMapUnmanaged(usize),
     max_lines: usize,
 ) DiffError![]const u8 {
     var line_start: isize = 0;
     var line_end: isize = -1;
-    var chars: std.ArrayListUnmanaged(u8) = .empty;
+    var chars: std.ArrayList(u8) = .empty;
     defer chars.deinit(allocator);
     // Walk the text, pulling out a Substring for each line.
     // TODO this can be handled with a Reader, avoiding all the manual splitting
@@ -859,14 +859,14 @@ fn diffLinesToCharsMunge(
 /// @param diffs List of Diff objects.
 /// @param lineArray List of unique strings.
 fn diffCharsToLines(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     char_diffs: *DiffList,
     line_array: []const []const u8,
 ) DiffError!DiffList {
     var diffs: DiffList = .empty;
     errdefer deinitDiffList(allocator, &diffs);
     try diffs.ensureTotalCapacity(allocator, char_diffs.items.len);
-    var text: std.ArrayListUnmanaged(u8) = .empty;
+    var text: std.ArrayList(u8) = .empty;
     defer text.deinit(allocator);
 
     for (char_diffs.items) |*d| {
@@ -885,17 +885,17 @@ fn diffCharsToLines(
 /// Reorder and merge like edit sections.  Merge equalities.
 /// Any edit section can move as long as it doesn't cross an equality.
 /// @param diffs List of Diff objects.
-fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
+fn diffCleanupMerge(allocator: Allocator, diffs: *DiffList) DiffError!void {
     // Add a dummy entry at the end.
     try diffs.append(allocator, .{ .operation = .equal, .text = "" });
     var pointer: usize = 0;
     var count_delete: usize = 0;
     var count_insert: usize = 0;
 
-    var text_delete: std.ArrayListUnmanaged(u8) = .empty;
+    var text_delete: std.ArrayList(u8) = .empty;
     defer text_delete.deinit(allocator);
 
-    var text_insert: std.ArrayListUnmanaged(u8) = .empty;
+    var text_insert: std.ArrayList(u8) = .empty;
     defer text_insert.deinit(allocator);
 
     var common_length: usize = undefined;
@@ -1062,10 +1062,10 @@ fn diffCleanupMerge(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!vo
 /// Reduce the number of edits by eliminating semantically trivial
 /// equalities.
 /// @param diffs List of Diff objects.
-pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffError!void {
+pub fn diffCleanupSemantic(allocator: Allocator, diffs: *DiffList) DiffError!void {
     var changes = false;
     // Stack of indices where equalities are found.
-    var equalities: std.ArrayListUnmanaged(isize) = .empty;
+    var equalities: std.ArrayList(isize) = .empty;
     defer equalities.deinit(allocator);
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality: ?[]const u8 = null;
@@ -1197,7 +1197,7 @@ pub fn diffCleanupSemantic(allocator: std.mem.Allocator, diffs: *DiffList) DiffE
 /// which can be shifted sideways to align the edit to a word boundary.
 /// e.g: The c<ins>at c</ins>ame. -> The <ins>cat </ins>came.
 pub fn diffCleanupSemanticLossless(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     diffs: *DiffList,
 ) DiffError!void {
     var pointer: usize = 1;
@@ -1207,15 +1207,15 @@ pub fn diffCleanupSemanticLossless(
             diffs.items[pointer + 1].operation == .equal)
         {
             // This is a single edit surrounded by equalities.
-            var equality_1: std.ArrayListUnmanaged(u8) = .empty;
+            var equality_1: std.ArrayList(u8) = .empty;
             defer equality_1.deinit(allocator);
             try equality_1.appendSlice(allocator, diffs.items[pointer - 1].text);
 
-            var edit: std.ArrayListUnmanaged(u8) = .empty;
+            var edit: std.ArrayList(u8) = .empty;
             defer edit.deinit(allocator);
             try edit.appendSlice(allocator, diffs.items[pointer].text);
 
-            var equality_2: std.ArrayListUnmanaged(u8) = .empty;
+            var equality_2: std.ArrayList(u8) = .empty;
             defer equality_2.deinit(allocator);
             try equality_2.appendSlice(allocator, diffs.items[pointer + 1].text);
 
@@ -1241,15 +1241,15 @@ pub fn diffCleanupSemanticLossless(
 
             // Second, step character by character right,
             // looking for the best fit.
-            var best_equality_1: std.ArrayListUnmanaged(u8) = .empty;
+            var best_equality_1: std.ArrayList(u8) = .empty;
             defer best_equality_1.deinit(allocator);
             try best_equality_1.appendSlice(allocator, equality_1.items);
 
-            var best_edit: std.ArrayListUnmanaged(u8) = .empty;
+            var best_edit: std.ArrayList(u8) = .empty;
             defer best_edit.deinit(allocator);
             try best_edit.appendSlice(allocator, edit.items);
 
-            var best_equality_2: std.ArrayListUnmanaged(u8) = .empty;
+            var best_equality_2: std.ArrayList(u8) = .empty;
             defer best_equality_2.deinit(allocator);
             try best_equality_2.appendSlice(allocator, equality_2.items);
 
@@ -1368,13 +1368,13 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
 /// Reduce the number of edits by eliminating operationally trivial
 /// equalities.
 pub fn diffCleanupEfficiency(
-    dmp: DiffMatchPatch,
-    allocator: std.mem.Allocator,
+    dmp: *const DiffMatchPatch,
+    allocator: Allocator,
     diffs: *DiffList,
 ) DiffError!void {
     var changes = false;
     // Stack of indices where equalities are found.
-    var equalities: std.ArrayListUnmanaged(usize) = .empty;
+    var equalities: std.ArrayList(usize) = .empty;
     defer equalities.deinit(allocator);
     // Always equal to equalities[equalitiesLength-1][1]
     var last_equality: []const u8 = "";
@@ -1535,9 +1535,9 @@ test diffCommonOverlap {
 }
 
 fn testDiffHalfMatch(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     params: struct {
-        dmp: DiffMatchPatch,
+        dmp: *const DiffMatchPatch,
         before: []const u8,
         after: []const u8,
         expected: ?HalfMatchResult,
@@ -1549,11 +1549,12 @@ fn testDiffHalfMatch(
 }
 
 test diffHalfMatch {
+    const zero_timeout: DiffMatchPatch = .{ .diff_timeout = 0 };
     const one_timeout: DiffMatchPatch = .{ .diff_timeout = 1 };
 
     // No match #1
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "1234567890",
         .after = "abcdef",
         .expected = null,
@@ -1561,7 +1562,7 @@ test diffHalfMatch {
 
     // No match #2
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "12345",
         .after = "23",
         .expected = null,
@@ -1569,7 +1570,7 @@ test diffHalfMatch {
 
     // Single matches
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "1234567890",
         .after = "a345678z",
         .expected = .{
@@ -1583,7 +1584,7 @@ test diffHalfMatch {
 
     // Single Match #2
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "a345678z",
         .after = "1234567890",
         .expected = .{
@@ -1597,7 +1598,7 @@ test diffHalfMatch {
 
     // Single Match #3
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "abc56789z",
         .after = "1234567890",
         .expected = .{
@@ -1611,7 +1612,7 @@ test diffHalfMatch {
 
     // Single Match #4
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "a23456xyz",
         .after = "1234567890",
         .expected = .{
@@ -1625,7 +1626,7 @@ test diffHalfMatch {
 
     // Multiple matches #1
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "121231234123451234123121",
         .after = "a1234123451234z",
         .expected = .{
@@ -1639,7 +1640,7 @@ test diffHalfMatch {
 
     // Multiple Matches #2
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "x-=-=-=-=-=-=-=-=-=-=-=-=",
         .after = "xx-=-=-=-=-=-=-=",
         .expected = .{
@@ -1653,7 +1654,7 @@ test diffHalfMatch {
 
     // Multiple Matches #3
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "-=-=-=-=-=-=-=-=-=-=-=-=y",
         .after = "-=-=-=-=-=-=-=yy",
         .expected = .{
@@ -1670,7 +1671,7 @@ test diffHalfMatch {
     // Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
     // Non-optimal halfmatch
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = one_timeout,
+        .dmp = &one_timeout,
         .before = "qHilloHelloHew",
         .after = "xHelloHeHulloy",
         .expected = .{
@@ -1684,7 +1685,7 @@ test diffHalfMatch {
 
     // Non-optimal halfmatch
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = .{ .diff_timeout = 0 },
+        .dmp = &zero_timeout,
         .before = "qHilloHelloHew",
         .after = "xHelloHeHulloy",
         .expected = null,
@@ -1694,7 +1695,7 @@ test diffHalfMatch {
 test diffLinesToChars {
     const allocator = testing.allocator;
     // Convert lines down to characters.
-    var tmp_array_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    var tmp_array_list: std.ArrayList([]const u8) = .empty;
     defer tmp_array_list.deinit(allocator);
     try tmp_array_list.append(allocator, "");
     try tmp_array_list.append(allocator, "alpha\n");
@@ -1741,9 +1742,9 @@ test diffLinesToChars {
     const n: u8 = 255;
     tmp_array_list.clearRetainingCapacity();
 
-    var line_list: std.ArrayListUnmanaged(u8) = .empty;
+    var line_list: std.ArrayList(u8) = .empty;
     defer line_list.deinit(allocator);
-    var char_list: std.ArrayListUnmanaged(u8) = .empty;
+    var char_list: std.ArrayList(u8) = .empty;
     defer char_list.deinit(allocator);
 
     var i: u8 = 1;
@@ -1765,7 +1766,7 @@ test diffLinesToChars {
 }
 
 fn testDiffCharsToLines(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     params: struct {
         diffs: []const Diff,
         line_array: []const []const u8,
@@ -1810,7 +1811,7 @@ test diffCharsToLines {
     // TODO: Implement exhaustive tests
 }
 
-fn testDiffCleanupMerge(allocator: std.mem.Allocator, params: struct {
+fn testDiffCleanupMerge(allocator: Allocator, params: struct {
     input: []const Diff,
     expected: []const Diff,
 }) !void {
@@ -2012,7 +2013,7 @@ test diffCleanupMerge {
 }
 
 fn testDiffCleanupSemanticLossless(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     params: struct {
         input: []const Diff,
         expected: []const Diff,
@@ -2141,8 +2142,8 @@ test diffCleanupSemanticLossless {
     }});
 }
 
-fn rebuildtexts(allocator: std.mem.Allocator, diffs: DiffList) ![2][]const u8 {
-    var text: [2]std.ArrayListUnmanaged(u8) = .{ .empty, .empty };
+fn rebuildtexts(allocator: Allocator, diffs: DiffList) ![2][]const u8 {
+    var text: [2]std.ArrayList(u8) = .{ .empty, .empty };
     errdefer {
         text[0].deinit(allocator);
         text[1].deinit(allocator);
@@ -2226,9 +2227,9 @@ test rebuildtexts {
 }
 
 fn testDiffBisect(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     params: struct {
-        dmp: DiffMatchPatch,
+        dmp: *const DiffMatchPatch,
         before: []const u8,
         after: []const u8,
         deadline: u64,
@@ -2248,7 +2249,7 @@ test diffBisect {
 
     // Normal
     try checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = a,
         .after = b,
         .deadline = std.math.maxInt(u64), // Travis TODO not sure if maxInt(u64) is correct for  DateTime.MaxValue
@@ -2263,7 +2264,7 @@ test diffBisect {
 
     // Timeout
     try checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = a,
         .after = b,
         .deadline = 0, // Travis TODO not sure if 0 is correct for  DateTime.MinValue
@@ -2287,9 +2288,9 @@ test "diffHalfMatch leak regression test" {
 }
 
 fn testDiff(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     params: struct {
-        dmp: DiffMatchPatch,
+        dmp: *const DiffMatchPatch,
         before: []const u8,
         after: []const u8,
         check_lines: bool,
@@ -2306,7 +2307,7 @@ test diff {
 
     //  Null case.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "",
         .after = "",
         .check_lines = false,
@@ -2315,7 +2316,7 @@ test diff {
 
     //  Equality.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "abc",
         .after = "abc",
         .check_lines = false,
@@ -2326,7 +2327,7 @@ test diff {
 
     // Simple insertion.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "abc",
         .after = "ab123c",
         .check_lines = false,
@@ -2339,7 +2340,7 @@ test diff {
 
     // Simple deletion.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "a123bc",
         .after = "abc",
         .check_lines = false,
@@ -2352,7 +2353,7 @@ test diff {
 
     // Two insertions.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "abc",
         .after = "a123b456c",
         .check_lines = false,
@@ -2367,7 +2368,7 @@ test diff {
 
     // Two deletions.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "a123b456c",
         .after = "abc",
         .check_lines = false,
@@ -2382,7 +2383,7 @@ test diff {
 
     // Simple case #1
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "a",
         .after = "b",
         .check_lines = false,
@@ -2394,7 +2395,7 @@ test diff {
 
     // Simple case #2
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "Apples are a fruit.",
         .after = "Bananas are also fruit.",
         .check_lines = false,
@@ -2409,7 +2410,7 @@ test diff {
 
     // Simple case #3
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "ax\t",
         .after = "\u{0680}x\x00",
         .check_lines = false,
@@ -2424,7 +2425,7 @@ test diff {
 
     // Overlap #1
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "1ayb2",
         .after = "abxab",
         .check_lines = false,
@@ -2440,7 +2441,7 @@ test diff {
 
     // Overlap #2
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "abcy",
         .after = "xaxcxabc",
         .check_lines = false,
@@ -2453,7 +2454,7 @@ test diff {
 
     // Overlap #3
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg",
         .after = "a-bcd-efghijklmnopqrs",
         .check_lines = false,
@@ -2472,7 +2473,7 @@ test diff {
 
     // Large equality
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = this,
+        .dmp = &this,
         .before = "a [[Pennsylvania]] and [[New",
         .after = " and [[Pennsylvania]]",
         .check_lines = false,
@@ -2600,7 +2601,7 @@ test "diffLineMode" {
 }
 
 fn testDiffCleanupSemantic(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     params: struct {
         input: []const Diff,
         expected: []const Diff,
@@ -2779,7 +2780,7 @@ test diffCleanupSemantic {
 
 fn testDiffCleanupEfficiency(
     allocator: Allocator,
-    dmp: DiffMatchPatch,
+    dmp: *const DiffMatchPatch,
     params: struct {
         input: []const Diff,
         expected: []const Diff,
@@ -2816,7 +2817,7 @@ test "diffCleanupEfficiency" {
             testing.allocator,
             testDiffCleanupEfficiency,
             .{
-                dmp,
+                &dmp,
                 .{ .input = dslice, .expected = dslice },
             },
         );
@@ -2837,7 +2838,7 @@ test "diffCleanupEfficiency" {
             testing.allocator,
             testDiffCleanupEfficiency,
             .{
-                dmp,
+                &dmp,
                 .{ .input = dslice, .expected = d_after },
             },
         );
@@ -2857,7 +2858,7 @@ test "diffCleanupEfficiency" {
             testing.allocator,
             testDiffCleanupEfficiency,
             .{
-                dmp,
+                &dmp,
                 .{ .input = dslice, .expected = d_after },
             },
         );
@@ -2880,7 +2881,7 @@ test "diffCleanupEfficiency" {
             testing.allocator,
             testDiffCleanupEfficiency,
             .{
-                dmp,
+                &dmp,
                 .{ .input = dslice, .expected = d_after },
             },
         );
@@ -2902,7 +2903,7 @@ test "diffCleanupEfficiency" {
             testing.allocator,
             testDiffCleanupEfficiency,
             .{
-                dmp,
+                &dmp,
                 .{ .input = dslice, .expected = d_after },
             },
         );
@@ -2912,7 +2913,7 @@ test "diffCleanupEfficiency" {
 
 /// https://github.com/ziglang/zig/pull/23042/files
 fn checkAllAllocationFailures(
-    backing_allocator: std.mem.Allocator,
+    backing_allocator: Allocator,
     comptime test_fn: anytype,
     extra_args: CheckAllAllocationFailuresTuples(@TypeOf(test_fn)).ExtraArgsTuple,
 ) !void {
@@ -2937,11 +2938,11 @@ fn CheckAllAllocationFailuresTuples(comptime TestFn: type) struct {
     const ArgsTuple = std.meta.ArgsTuple(TestFn);
 
     const fn_args_fields = std.meta.fields(ArgsTuple);
-    if (fn_args_fields.len == 0 or fn_args_fields[0].type != std.mem.Allocator) {
-        @compileError("The provided function must have an " ++ @typeName(std.mem.Allocator) ++ " as its first argument");
+    if (fn_args_fields.len == 0 or fn_args_fields[0].type != Allocator) {
+        @compileError("The provided function must have an " ++ @typeName(Allocator) ++ " as its first argument");
     }
 
-    // remove the first tuple field (`std.mem.Allocator`)
+    // remove the first tuple field (`Allocator`)
     var extra_args_tuple_info = @typeInfo(ArgsTuple);
     var extra_args_fields = extra_args_tuple_info.@"struct".fields[1..].*;
     for (&extra_args_fields, 0..) |*extra_field, i| {
