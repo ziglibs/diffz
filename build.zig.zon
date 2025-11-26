@@ -1,7 +1,7 @@
 .{
     .name = .diffz,
     .version = "0.0.1",
-    .minimum_zig_version = "0.16.0-dev.1204+389368392",
+    .minimum_zig_version = "0.16.0-dev.1458+755a3d957",
     .paths = .{
         "DiffMatchPatch.zig",
         "LICENSE",

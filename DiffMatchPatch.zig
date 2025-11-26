@@ -2944,13 +2944,12 @@ fn CheckAllAllocationFailuresTuples(comptime TestFn: type) struct {
     }
 
     // remove the first tuple field (`Allocator`)
-    var extra_args_tuple_info = @typeInfo(ArgsTuple);
-    var extra_args_fields = extra_args_tuple_info.@"struct".fields[1..].*;
-    for (&extra_args_fields, 0..) |*extra_field, i| {
-        extra_field.name = fn_args_fields[i].name;
+    var extra_args_tuple_info = @typeInfo(ArgsTuple).@"struct";
+    var field_types: [extra_args_tuple_info.fields.len - 1]type = undefined;
+    for (&field_types, extra_args_tuple_info.fields[1..]) |*ty, field| {
+        ty.* = field.type;
     }
-    extra_args_tuple_info.@"struct".fields = &extra_args_fields;
-    const ExtraArgsTuple = @Type(extra_args_tuple_info);
+    const ExtraArgsTuple = @Tuple(&field_types);
 
     return .{
         .ArgsTuple = ArgsTuple,
