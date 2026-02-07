@@ -5,7 +5,12 @@ const Allocator = std.mem.Allocator;
 const DiffMatchPatch = @This();
 
 /// DMP with default configuration options
-pub const default: DiffMatchPatch = .{};
+pub fn initDefault(io: std.Io, allocator: Allocator) DiffMatchPatch {
+    return .{
+        .io = io,
+        .allocator = allocator,
+    };
+}
 
 pub const Diff = struct {
     pub const Operation = enum {
@@ -45,8 +50,9 @@ pub const Diff = struct {
     }
 };
 
-/// Duration to map a diff before falling back to a non-minimal diff. Use `std.Io.Duration.max` for disable timeouts.
-diff_timeout: std.Io.Duration = .fromSeconds(1),
+io: std.Io,
+allocator: Allocator,
+
 /// Cost of an empty edit operation in terms of edit characters.
 diff_edit_cost: u16 = 4,
 /// Number of bytes in each string needed to trigger a line-based diff
@@ -81,17 +87,21 @@ pub const DiffError = error{OutOfMemory};
 /// @return List of Diff objects.
 pub fn diff(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     /// If false, then don't run a line-level diff first
     /// to identify the changed areas. If true, then run
     /// a faster slightly less optimal diff.
     check_lines: bool,
+    /// Duration to map a diff before falling back to a non-minimal diff. Use `std.Io.Duration.max` for disable timeouts.
+    timeout: std.Io.Timeout,
 ) DiffError!DiffList {
-    const want_timeout = dmp.diff_timeout.toNanoseconds() != std.Io.Duration.max.toNanoseconds();
-    var timer: ?std.time.Timer = if (want_timeout) std.time.Timer.start() catch null else null;
-    return dmp.diffInternal(allocator, before, after, check_lines, if (timer) |*t| t else null);
+    return dmp.diffInternal(
+        before,
+        after,
+        check_lines,
+        timeout.toTimestamp(dmp.io),
+    );
 }
 
 const DiffList = std.ArrayList(Diff);
@@ -119,12 +129,12 @@ fn freeRangeDiffList(
 
 fn diffInternal(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     check_lines: bool,
-    timer: ?*std.time.Timer,
+    deadline: ?std.Io.Clock.Timestamp,
 ) DiffError!DiffList {
+    const allocator = dmp.allocator;
     // Trim off common prefix (speedup).
     const common_prefix_length = std.mem.indexOfDiff(u8, before, after) orelse {
         // equality
@@ -151,7 +161,7 @@ fn diffInternal(
     trimmed_after = trimmed_after[0 .. trimmed_after.len - common_suffix_length];
 
     // Compute the diff on the middle block.
-    var diffs = try dmp.diffCompute(allocator, trimmed_before, trimmed_after, check_lines, timer);
+    var diffs = try dmp.diffCompute(trimmed_before, trimmed_after, check_lines, deadline);
     errdefer deinitDiffList(allocator, &diffs);
 
     // Restore the prefix and suffix.
@@ -211,12 +221,12 @@ fn diffCommonSuffix(before: []const u8, after: []const u8) usize {
 /// @return List of Diff objects.
 fn diffCompute(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     before: []const u8,
     after: []const u8,
     check_lines: bool,
-    timer: ?*std.time.Timer,
+    deadline: ?std.Io.Clock.Timestamp,
 ) DiffError!DiffList {
+    const allocator = dmp.allocator;
     if (before.len == 0) {
         // Just add some text (speedup).
         var diffs: DiffList = .empty;
@@ -286,24 +296,22 @@ fn diffCompute(
     }
 
     // Check to see if the problem can be split in two.
-    if (try dmp.diffHalfMatch(allocator, before, after)) |half_match| {
+    if (try dmp.diffHalfMatch(before, after, deadline)) |half_match| {
         // A half-match was found, sort out the return data.
         defer half_match.deinit(allocator);
         // Send both pairs off for separate processing.
         var diffs = try dmp.diffInternal(
-            allocator,
             half_match.prefix_before,
             half_match.prefix_after,
             check_lines,
-            timer,
+            deadline,
         );
         errdefer deinitDiffList(allocator, &diffs);
         var diffs_b = try dmp.diffInternal(
-            allocator,
             half_match.suffix_before,
             half_match.suffix_after,
             check_lines,
-            timer,
+            deadline,
         );
         defer diffs_b.deinit(allocator);
         // we have to deinit regardless, so deinitDiffList would be
@@ -324,10 +332,10 @@ fn diffCompute(
         return diffs;
     }
     if (check_lines and before.len > dmp.diff_check_lines_over and after.len > dmp.diff_check_lines_over) {
-        return dmp.diffLineMode(allocator, before, after, timer);
+        return dmp.diffLineMode(before, after, deadline);
     }
 
-    return dmp.diffBisect(allocator, before, after, timer);
+    return dmp.diffBisect(before, after, deadline);
 }
 
 const HalfMatchResult = struct {
@@ -356,11 +364,12 @@ const HalfMatchResult = struct {
 ///     common middle.  Or null if there was no match.
 fn diffHalfMatch(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     before: []const u8,
     after: []const u8,
+    deadline: ?std.Io.Clock.Timestamp,
 ) DiffError!?HalfMatchResult {
-    if (dmp.diff_timeout.toNanoseconds() == std.Io.Duration.max.toNanoseconds()) {
+    const allocator = dmp.allocator;
+    if (deadline == null) {
         // Don't risk returning a non-optimal diff if we have unlimited time.
         return null;
     }
@@ -372,12 +381,12 @@ fn diffHalfMatch(
     }
 
     // First check if the second quarter is the seed for a half-match.
-    const half_match_1 = try dmp.diffHalfMatchInternal(allocator, long_text, short_text, (long_text.len + 3) / 4);
+    const half_match_1 = try dmp.diffHalfMatchInternal(long_text, short_text, (long_text.len + 3) / 4);
     errdefer {
         if (half_match_1) |h_m| h_m.deinit(allocator);
     }
     // Check again based on the third quarter.
-    const half_match_2 = try dmp.diffHalfMatchInternal(allocator, long_text, short_text, (long_text.len + 1) / 2);
+    const half_match_2 = try dmp.diffHalfMatchInternal(long_text, short_text, (long_text.len + 1) / 2);
     errdefer {
         if (half_match_2) |h_m| h_m.deinit(allocator);
     }
@@ -427,12 +436,12 @@ fn diffHalfMatch(
 ///     suffix of longtext, the prefix of shorttext, the suffix of shorttext
 ///     and the common middle.  Or null if there was no match.
 fn diffHalfMatchInternal(
-    _: DiffMatchPatch,
-    allocator: Allocator,
+    dmp: *const DiffMatchPatch,
     long_text: []const u8,
     short_text: []const u8,
     i: usize,
 ) DiffError!?HalfMatchResult {
+    const allocator = dmp.allocator;
     // Start with a 1/4 length Substring at position i as a seed.
     const seed = long_text[i .. i + long_text.len / 4];
     var j: isize = -1;
@@ -495,11 +504,11 @@ fn diffHalfMatchInternal(
 /// @return List of Diff objects.
 fn diffBisect(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     before: []const u8,
     after: []const u8,
-    timer: ?*std.time.Timer,
+    deadline: ?std.Io.Clock.Timestamp,
 ) DiffError!DiffList {
+    const allocator = dmp.allocator;
     const before_length: isize = @intCast(before.len);
     const after_length: isize = @intCast(after.len);
     const max_d: isize = @intCast((before.len + after.len + 1) / 2);
@@ -534,10 +543,9 @@ fn diffBisect(
     var d: isize = 0;
     while (d < max_d) : (d += 1) {
         // Bail out if deadline is reached.
-        if (timer) |t| {
-            std.debug.assert(dmp.diff_timeout.toNanoseconds() != std.Io.Duration.max.toNanoseconds());
-            const passed_time = t.read();
-            if (passed_time > dmp.diff_timeout.toNanoseconds()) break; // Bail out if deadline is reached.
+        if (deadline) |t| {
+            const duration = t.untilNow(dmp.io);
+            if (duration.raw.toNanoseconds() > 0) break; // Bail out if deadline is reached.
         }
 
         // Walk the front path one step.
@@ -573,7 +581,7 @@ fn diffBisect(
                     const x2 = before_length - v2.items[@intCast(k2_offset)];
                     if (x1 >= x2) {
                         // Overlap detected.
-                        return dmp.diffBisectSplit(allocator, before, after, x1, y1, timer);
+                        return dmp.diffBisectSplit(before, after, x1, y1, deadline);
                     }
                 }
             }
@@ -615,7 +623,7 @@ fn diffBisect(
                     x2 = before_length - v2.items[@intCast(k2_offset)];
                     if (x1 >= x2) {
                         // Overlap detected.
-                        return dmp.diffBisectSplit(allocator, before, after, x1, y1, timer);
+                        return dmp.diffBisectSplit(before, after, x1, y1, deadline);
                     }
                 }
             }
@@ -647,22 +655,22 @@ fn diffBisect(
 /// @return LinkedList of Diff objects.
 fn diffBisectSplit(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     text1: []const u8,
     text2: []const u8,
     x: isize,
     y: isize,
-    timer: ?*std.time.Timer,
+    deadline: ?std.Io.Clock.Timestamp,
 ) DiffError!DiffList {
+    const allocator = dmp.allocator;
     const text1a = text1[0..@intCast(x)];
     const text2a = text2[0..@intCast(y)];
     const text1b = text1[@intCast(x)..];
     const text2b = text2[@intCast(y)..];
 
     // Compute both diffs serially.
-    var diffs = try dmp.diffInternal(allocator, text1a, text2a, false, timer);
+    var diffs = try dmp.diffInternal(text1a, text2a, false, deadline);
     errdefer deinitDiffList(allocator, &diffs);
-    var diffs_b = try dmp.diffInternal(allocator, text1b, text2b, false, timer);
+    var diffs_b = try dmp.diffInternal(text1b, text2b, false, deadline);
     // Free the list, but not the contents:
     defer diffs_b.deinit(allocator);
     errdefer {
@@ -683,11 +691,11 @@ fn diffBisectSplit(
 /// @return List of Diff objects.
 fn diffLineMode(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     text1_in: []const u8,
     text2_in: []const u8,
-    timer: ?*std.time.Timer,
+    deadline: ?std.Io.Clock.Timestamp,
 ) DiffError!DiffList {
+    const allocator = dmp.allocator;
     // Scan the text on a line-by-line basis first.
     var a = try diffLinesToChars(allocator, text1_in, text2_in);
     defer a.deinit(allocator);
@@ -696,7 +704,7 @@ fn diffLineMode(
     const line_array = a.line_array;
     var diffs: DiffList = undefined;
     {
-        var char_diffs: DiffList = try dmp.diffInternal(allocator, text1, text2, false, timer);
+        var char_diffs: DiffList = try dmp.diffInternal(text1, text2, false, deadline);
         defer deinitDiffList(allocator, &char_diffs);
         // Convert the diff back to original text.
         diffs = try diffCharsToLines(allocator, &char_diffs, line_array.items);
@@ -745,7 +753,7 @@ fn diffLineMode(
                         &.{},
                     );
                     pointer = pointer - count_delete - count_insert;
-                    var sub_diff = try dmp.diffInternal(allocator, text_delete.items, text_insert.items, false, timer);
+                    var sub_diff = try dmp.diffInternal(text_delete.items, text_insert.items, false, deadline);
                     {
                         errdefer deinitDiffList(allocator, &sub_diff);
                         try diffs.ensureUnusedCapacity(allocator, sub_diff.items.len);
@@ -1369,9 +1377,9 @@ fn diffCleanupSemanticScore(one: []const u8, two: []const u8) usize {
 /// equalities.
 pub fn diffCleanupEfficiency(
     dmp: *const DiffMatchPatch,
-    allocator: Allocator,
     diffs: *DiffList,
 ) DiffError!void {
+    const allocator = dmp.allocator;
     var changes = false;
     // Stack of indices where equalities are found.
     var equalities: std.ArrayList(usize) = .empty;
@@ -1537,24 +1545,29 @@ test diffCommonOverlap {
 fn testDiffHalfMatch(
     allocator: Allocator,
     params: struct {
-        dmp: *const DiffMatchPatch,
+        timeout: std.Io.Timeout,
         before: []const u8,
         after: []const u8,
         expected: ?HalfMatchResult,
     },
 ) !void {
-    const maybe_result = try params.dmp.diffHalfMatch(allocator, params.before, params.after);
+    const dmp: DiffMatchPatch = .initDefault(testing.io, allocator);
+    const maybe_result = try dmp.diffHalfMatch(
+        params.before,
+        params.after,
+        params.timeout.toTimestamp(testing.io),
+    );
     defer if (maybe_result) |result| result.deinit(allocator);
     try testing.expectEqualDeep(params.expected, maybe_result);
 }
 
 test diffHalfMatch {
-    const no_timeout: DiffMatchPatch = .{ .diff_timeout = .max };
-    const with_timeout: DiffMatchPatch = .{ .diff_timeout = .fromNanoseconds(0) };
+    const no_timeout: std.Io.Timeout = .none;
+    const with_timeout: std.Io.Timeout = .{ .deadline = .{ .clock = .awake, .raw = .fromNanoseconds(0) } };
 
     // No match #1
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "1234567890",
         .after = "abcdef",
         .expected = null,
@@ -1562,7 +1575,7 @@ test diffHalfMatch {
 
     // No match #2
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "12345",
         .after = "23",
         .expected = null,
@@ -1570,7 +1583,7 @@ test diffHalfMatch {
 
     // Single matches
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "1234567890",
         .after = "a345678z",
         .expected = .{
@@ -1584,7 +1597,7 @@ test diffHalfMatch {
 
     // Single Match #2
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "a345678z",
         .after = "1234567890",
         .expected = .{
@@ -1598,7 +1611,7 @@ test diffHalfMatch {
 
     // Single Match #3
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "abc56789z",
         .after = "1234567890",
         .expected = .{
@@ -1612,7 +1625,7 @@ test diffHalfMatch {
 
     // Single Match #4
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "a23456xyz",
         .after = "1234567890",
         .expected = .{
@@ -1626,7 +1639,7 @@ test diffHalfMatch {
 
     // Multiple matches #1
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "121231234123451234123121",
         .after = "a1234123451234z",
         .expected = .{
@@ -1640,7 +1653,7 @@ test diffHalfMatch {
 
     // Multiple Matches #2
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "x-=-=-=-=-=-=-=-=-=-=-=-=",
         .after = "xx-=-=-=-=-=-=-=",
         .expected = .{
@@ -1654,7 +1667,7 @@ test diffHalfMatch {
 
     // Multiple Matches #3
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "-=-=-=-=-=-=-=-=-=-=-=-=y",
         .after = "-=-=-=-=-=-=-=yy",
         .expected = .{
@@ -1671,7 +1684,7 @@ test diffHalfMatch {
     // Optimal diff would be -q+x=H-i+e=lloHe+Hu=llo-Hew+y not -qHillo+x=HelloHe-w+Hulloy
     // Non-optimal halfmatch
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &with_timeout,
+        .timeout = with_timeout,
         .before = "qHilloHelloHew",
         .after = "xHelloHeHulloy",
         .expected = .{
@@ -1685,7 +1698,7 @@ test diffHalfMatch {
 
     // Non-optimal halfmatch
     try checkAllAllocationFailures(testing.allocator, testDiffHalfMatch, .{.{
-        .dmp = &no_timeout,
+        .timeout = no_timeout,
         .before = "qHilloHelloHew",
         .after = "xHelloHeHulloy",
         .expected = null,
@@ -2229,29 +2242,29 @@ test rebuildtexts {
 fn testDiffBisect(
     allocator: Allocator,
     params: struct {
-        dmp: *const DiffMatchPatch,
+        timeout: std.Io.Timeout,
         before: []const u8,
         after: []const u8,
         expected: []const Diff,
     },
 ) !void {
-    const want_timeout = params.dmp.diff_timeout.toNanoseconds() != std.Io.Duration.max.toNanoseconds();
-    var timer: ?std.time.Timer = if (want_timeout) std.time.Timer.start() catch null else null;
-    var diffs = try params.dmp.diffBisect(allocator, params.before, params.after, if (timer) |*t| t else null);
+    const dmp: DiffMatchPatch = .initDefault(testing.io, allocator);
+    var diffs = try dmp.diffBisect(
+        params.before,
+        params.after,
+        params.timeout.toTimestamp(testing.io),
+    );
     defer deinitDiffList(allocator, &diffs);
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
 test diffBisect {
-    var this: DiffMatchPatch = .default;
-
     const a = "cat";
     const b = "map";
 
     // Normal
-    this.diff_timeout = .max;
     try checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
-        .dmp = &this,
+        .timeout = .none,
         .before = a,
         .after = b,
         .expected = &.{
@@ -2264,9 +2277,8 @@ test diffBisect {
     }});
 
     // Timeout
-    this.diff_timeout = .zero;
     try checkAllAllocationFailures(testing.allocator, testDiffBisect, .{.{
-        .dmp = &this,
+        .timeout = .{ .duration = .{ .clock = .awake, .raw = .fromNanoseconds(0) } },
         .before = a,
         .after = b,
         .expected = &.{
@@ -2277,10 +2289,10 @@ test diffBisect {
 }
 
 fn diffHalfMatchLeak(allocator: Allocator) !void {
-    const dmp: DiffMatchPatch = .default;
+    const dmp: DiffMatchPatch = .initDefault(testing.io, testing.allocator);
     const text1 = "The quick brown fox jumps over the lazy dog.";
     const text2 = "That quick brown fox jumped over a lazy dog.";
-    var diffs = try dmp.diff(allocator, text2, text1, true);
+    var diffs = try dmp.diff(text2, text1, true, .none);
     deinitDiffList(allocator, &diffs);
 }
 
@@ -2291,24 +2303,22 @@ test "diffHalfMatch leak regression test" {
 fn testDiff(
     allocator: Allocator,
     params: struct {
-        dmp: *const DiffMatchPatch,
         before: []const u8,
         after: []const u8,
         check_lines: bool,
         expected: []const Diff,
     },
 ) !void {
-    var diffs = try params.dmp.diff(allocator, params.before, params.after, params.check_lines);
+    const dmp: DiffMatchPatch = .initDefault(testing.io, testing.allocator);
+    var diffs = try dmp.diff(params.before, params.after, params.check_lines, .none);
     defer deinitDiffList(allocator, &diffs);
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
 test diff {
-    const this: DiffMatchPatch = .{ .diff_timeout = .max };
 
     //  Null case.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "",
         .after = "",
         .check_lines = false,
@@ -2317,7 +2327,6 @@ test diff {
 
     //  Equality.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "abc",
         .after = "abc",
         .check_lines = false,
@@ -2328,7 +2337,6 @@ test diff {
 
     // Simple insertion.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "abc",
         .after = "ab123c",
         .check_lines = false,
@@ -2341,7 +2349,6 @@ test diff {
 
     // Simple deletion.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "a123bc",
         .after = "abc",
         .check_lines = false,
@@ -2354,7 +2361,6 @@ test diff {
 
     // Two insertions.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "abc",
         .after = "a123b456c",
         .check_lines = false,
@@ -2369,7 +2375,6 @@ test diff {
 
     // Two deletions.
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "a123b456c",
         .after = "abc",
         .check_lines = false,
@@ -2384,7 +2389,6 @@ test diff {
 
     // Simple case #1
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "a",
         .after = "b",
         .check_lines = false,
@@ -2396,7 +2400,6 @@ test diff {
 
     // Simple case #2
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "Apples are a fruit.",
         .after = "Bananas are also fruit.",
         .check_lines = false,
@@ -2411,7 +2414,6 @@ test diff {
 
     // Simple case #3
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "ax\t",
         .after = "\u{0680}x\x00",
         .check_lines = false,
@@ -2426,7 +2428,6 @@ test diff {
 
     // Overlap #1
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "1ayb2",
         .after = "abxab",
         .check_lines = false,
@@ -2442,7 +2443,6 @@ test diff {
 
     // Overlap #2
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "abcy",
         .after = "xaxcxabc",
         .check_lines = false,
@@ -2455,7 +2455,6 @@ test diff {
 
     // Overlap #3
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg",
         .after = "a-bcd-efghijklmnopqrs",
         .check_lines = false,
@@ -2474,7 +2473,6 @@ test diff {
 
     // Large equality
     try checkAllAllocationFailures(testing.allocator, testDiff, .{.{
-        .dmp = &this,
         .before = "a [[Pennsylvania]] and [[New",
         .after = " and [[Pennsylvania]]",
         .check_lines = false,
@@ -2487,6 +2485,7 @@ test diff {
         },
     }});
 
+    const dmp: DiffMatchPatch = .initDefault(testing.io, testing.allocator);
     const allocator = testing.allocator;
     // TODO these tests should be checked for allocation failure
 
@@ -2495,23 +2494,21 @@ test diff {
         const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
         const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
 
-        const with_timout: DiffMatchPatch = .{
-            .diff_timeout = .fromMilliseconds(100),
-        };
+        const timeout: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(100) } };
 
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer: std.Io.Timestamp = .now(testing.io, .awake);
         {
-            var time_diff = try with_timout.diff(allocator, a, b, false);
+            var time_diff = try dmp.diff(a, b, false, timeout);
             defer deinitDiffList(allocator, &time_diff);
         }
-        const duration = timer.read();
+        const duration = timer.untilNow(testing.io, .awake);
 
         // Test that we took at least the timeout period.
-        try testing.expect(with_timout.diff_timeout.toNanoseconds() <= duration); // diff: Timeout min.
+        try testing.expect(timeout.duration.raw.toNanoseconds() <= duration.toNanoseconds()); // diff: Timeout min.
         // Test that we didn't take forever (be forgiving).
         // Theoretically this test could fail very occasionally if the
         // OS task swaps or locks up for a second at the wrong moment.
-        try testing.expect((with_timout.diff_timeout.toNanoseconds()) * 10000 * 2 > duration); // diff: Timeout max.
+        try testing.expect((timeout.duration.raw.toNanoseconds()) * 10000 * 2 > duration.toNanoseconds()); // diff: Timeout max.
     }
 
     {
@@ -2520,10 +2517,10 @@ test diff {
         const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
         const b = "abcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\nabcdefghij\n";
 
-        var diff_checked = try this.diff(allocator, a, b, true);
+        var diff_checked = try dmp.diff(a, b, true, .none);
         defer deinitDiffList(allocator, &diff_checked);
 
-        var diff_unchecked = try this.diff(allocator, a, b, false);
+        var diff_unchecked = try dmp.diff(a, b, false, .none);
         defer deinitDiffList(allocator, &diff_unchecked);
 
         try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
@@ -2533,10 +2530,10 @@ test diff {
         const a = "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890";
         const b = "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
 
-        var diff_checked = try this.diff(allocator, a, b, true);
+        var diff_checked = try dmp.diff(a, b, true, .none);
         defer deinitDiffList(allocator, &diff_checked);
 
-        var diff_unchecked = try this.diff(allocator, a, b, false);
+        var diff_unchecked = try dmp.diff(a, b, false, .none);
         defer deinitDiffList(allocator, &diff_unchecked);
 
         try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Single line-mode.
@@ -2547,7 +2544,7 @@ test diff {
         const a = "1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n1234567890\n";
         const b = "abcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n1234567890\n1234567890\n1234567890\nabcdefghij\n";
 
-        var diffs_linemode = try this.diff(allocator, a, b, true);
+        var diffs_linemode = try dmp.diff(a, b, true, .none);
         defer deinitDiffList(allocator, &diffs_linemode);
 
         const texts_linemode = try rebuildtexts(allocator, diffs_linemode);
@@ -2556,7 +2553,7 @@ test diff {
             allocator.free(texts_linemode[1]);
         }
 
-        var diffs_textmode = try this.diff(allocator, a, b, false);
+        var diffs_textmode = try dmp.diff(a, b, false, .none);
         defer deinitDiffList(allocator, &diffs_textmode);
 
         const texts_textmode = try rebuildtexts(allocator, diffs_textmode);
@@ -2572,15 +2569,16 @@ test diff {
 
 fn testDiffLineMode(
     allocator: Allocator,
-    dmp: *DiffMatchPatch,
     before: []const u8,
     after: []const u8,
 ) !void {
+    var dmp: DiffMatchPatch = .initDefault(testing.io, allocator);
     dmp.diff_check_lines_over = 20;
-    var diff_checked = try dmp.diff(allocator, before, after, true);
+
+    var diff_checked = try dmp.diff(before, after, true, .none);
     defer deinitDiffList(allocator, &diff_checked);
 
-    var diff_unchecked = try dmp.diff(allocator, before, after, false);
+    var diff_unchecked = try dmp.diff(before, after, false, .none);
     defer deinitDiffList(allocator, &diff_unchecked);
 
     try testing.expectEqualDeep(diff_checked.items, diff_unchecked.items); // diff: Simple line-mode.
@@ -2588,13 +2586,10 @@ fn testDiffLineMode(
 }
 
 test "diffLineMode" {
-    var dmp: DiffMatchPatch = .{ .diff_timeout = .max };
     try checkAllAllocationFailures(
         testing.allocator,
         testDiffLineMode,
-
         .{
-            &dmp,
             "1234567890\n1234567890\n1234567890\n",
             "abcdefghij\nabcdefghij\nabcdefghij\n",
         },
@@ -2792,18 +2787,18 @@ fn testDiffCleanupEfficiency(
     for (params.input) |item| {
         diffs.appendAssumeCapacity(.{ .operation = item.operation, .text = try allocator.dupe(u8, item.text) });
     }
-    try dmp.diffCleanupEfficiency(allocator, &diffs);
+    try dmp.diffCleanupEfficiency(&diffs);
 
     try testing.expectEqualDeep(params.expected, diffs.items);
 }
 
 test "diffCleanupEfficiency" {
     const allocator = testing.allocator;
-    var dmp: DiffMatchPatch = .default;
+    var dmp: DiffMatchPatch = .initDefault(testing.io, allocator);
     dmp.diff_edit_cost = 4;
     { // Null case.
         var diffs: DiffList = .empty;
-        try dmp.diffCleanupEfficiency(allocator, &diffs);
+        try dmp.diffCleanupEfficiency(&diffs);
         try testing.expectEqualDeep(DiffList.empty, diffs);
     }
     { // No elimination.
