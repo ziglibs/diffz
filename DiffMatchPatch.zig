@@ -136,7 +136,7 @@ fn diffInternal(
 ) DiffError!DiffList {
     const allocator = dmp.allocator;
     // Trim off common prefix (speedup).
-    const common_prefix_length = std.mem.indexOfDiff(u8, before, after) orelse {
+    const common_prefix_length = std.mem.findDiff(u8, before, after) orelse {
         // equality
         var diffs: DiffList = .empty;
         errdefer deinitDiffList(allocator, &diffs);
@@ -254,7 +254,7 @@ fn diffCompute(
     const long_text = if (before.len > after.len) before else after;
     const short_text = if (before.len > after.len) after else before;
 
-    if (std.mem.indexOf(u8, long_text, short_text)) |index| {
+    if (std.mem.find(u8, long_text, short_text)) |index| {
         var diffs: DiffList = .empty;
         errdefer deinitDiffList(allocator, &diffs);
         // Shorter text is inside the longer text (speedup).
@@ -454,7 +454,7 @@ fn diffHalfMatchInternal(
     var best_short_text_b: []const u8 = "";
 
     while (j < short_text.len and b: {
-        j = @as(isize, @intCast(std.mem.indexOf(u8, short_text[@intCast(j + 1)..], seed) orelse break :b false)) + j + 1;
+        j = @as(isize, @intCast(std.mem.find(u8, short_text[@intCast(j + 1)..], seed) orelse break :b false)) + j + 1;
         break :b true;
     }) {
         const prefix_length = diffCommonPrefix(long_text[i..], short_text[@intCast(j)..]);
@@ -840,7 +840,7 @@ fn diffLinesToCharsMunge(
     // TODO this can be handled with a Reader, avoiding all the manual splitting
     while (line_end < @as(isize, @intCast(text.len)) - 1) {
         line_end = b: {
-            break :b @as(isize, @intCast(std.mem.indexOf(u8, text[@intCast(line_start)..], "\n") orelse
+            break :b @as(isize, @intCast(std.mem.find(u8, text[@intCast(line_start)..], "\n") orelse
                 break :b @intCast(text.len - 1))) + line_start;
         };
         var line = text[@intCast(line_start) .. @as(usize, @intCast(line_start)) + @as(usize, @intCast(line_end + 1 - line_start))];
@@ -1501,7 +1501,7 @@ fn diffCommonOverlap(text1_in: []const u8, text2_in: []const u8) usize {
     var length: usize = 1;
     while (true) {
         const pattern = text1[text_length - length ..];
-        const found = std.mem.indexOf(u8, text2, pattern) orelse
+        const found = std.mem.find(u8, text2, pattern) orelse
             return best;
 
         length += found;
