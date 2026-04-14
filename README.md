@@ -11,8 +11,7 @@ Currently implemented:
 ## Installation
 
 > [!NOTE]
-> The minimum supported Zig version is `0.16.0-dev.2510+bcb5218a2`.
-> Consider using previous commits when targeting older Zig version like `0.15.2`.
+> The default branch requires Zig `0.16.0` or later.
 
 ```bash
 # Initialize a `zig build` project if you haven't already
