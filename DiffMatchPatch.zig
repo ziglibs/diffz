@@ -2491,8 +2491,10 @@ test diff {
 
     // Increase the text lengths by 1024 times to ensure a timeout.
     {
-        const a = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n" ** 1024;
-        const b = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n" ** 1024;
+        const a_text: *const [128]u8 = "`Twas brillig, and the slithy toves\nDid gyre and gimble in the wabe:\nAll mimsy were the borogoves,\nAnd the mome raths outgrabe.\n";
+        const b_text: *const [209]u8 = "I am the very model of a modern major general,\nI've information vegetable, animal, and mineral,\nI know the kings of England, and I quote the fights historical,\nFrom Marathon to Waterloo, in order categorical.\n";
+        const a: []const u8 = @ptrCast(&@as([1024][a_text.len]u8, @splat(a_text.*)));
+        const b: []const u8 = @ptrCast(&@as([1024][b_text.len]u8, @splat(b_text.*)));
 
         const timeout: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromMilliseconds(100) } };
 
