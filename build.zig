@@ -31,13 +31,10 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all the tests");
     test_step.dependOn(&run_tests.step);
 
-    const kcov_bin = b.findProgram(&.{"kcov"}, &.{}) catch "kcov";
-
-    const run_kcov = b.addSystemCommand(&.{
-        kcov_bin,
-        "--clean",
-        "--exclude-line=unreachable,expect(false)",
-    });
+    const run_kcov = std.Build.Step.Run.create(b, "run kcov");
+    run_kcov.addFileArg(b.findProgramLazy(.{ .names = &.{"kcov"} }));
+    run_kcov.addArg("--clean");
+    run_kcov.addArg("--exclude-line=unreachable,expect(false)");
     run_kcov.addPrefixedDirectoryArg("--include-pattern=", b.path("."));
     const coverage_output = run_kcov.addOutputDirectoryArg(".");
     run_kcov.addArtifactArg(tests);
